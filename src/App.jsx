@@ -82,26 +82,31 @@ function App() {
 
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
-        let role = "viewer";
         const isDesignatedAdmin = ADMIN_EMAILS.includes(
           firebaseUser.email.toLowerCase()
         );
+
+        // Designated admins always get admin — Firestore write is a non-blocking side effect
+        if (isDesignatedAdmin) {
+          setDoc(
+            doc(db, "userRoles", firebaseUser.uid),
+            { email: firebaseUser.email, role: "admin", createdAt: serverTimestamp() },
+            { merge: true }
+          ).catch(() => {});
+          setUser({ email: firebaseUser.email, uid: firebaseUser.uid, role: "admin" });
+          setAuthLoading(false);
+          return;
+        }
+
+        // For everyone else, look up their role from Firestore
+        let role = "viewer";
         try {
           const roleSnap = await getDoc(doc(db, "userRoles", firebaseUser.uid));
 
           if (roleSnap.exists()) {
             role = roleSnap.data().role ?? "viewer";
-            // Upgrade to admin if email is in the designated admin list
-            if (isDesignatedAdmin && role !== "admin") {
-              role = "admin";
-              await setDoc(
-                doc(db, "userRoles", firebaseUser.uid),
-                { role: "admin" },
-                { merge: true }
-              );
-            }
           } else {
-            // Check if a pending invite exists for this email
+            // Check for a pending invite
             const pendingSnap = await getDoc(
               doc(db, "pendingRoles", firebaseUser.email)
             );
@@ -113,13 +118,6 @@ function App() {
                 createdAt: serverTimestamp(),
               });
               await deleteDoc(doc(db, "pendingRoles", firebaseUser.email));
-            } else if (isDesignatedAdmin) {
-              role = "admin";
-              await setDoc(doc(db, "userRoles", firebaseUser.uid), {
-                email: firebaseUser.email,
-                role: "admin",
-                createdAt: serverTimestamp(),
-              });
             } else {
               await setDoc(doc(db, "userRoles", firebaseUser.uid), {
                 email: firebaseUser.email,
@@ -128,8 +126,8 @@ function App() {
               });
             }
           }
-        } catch {
-          // Firestore unavailable — continue with viewer
+        } catch (err) {
+          console.error("Firestore role lookup failed:", err.code, err.message);
         }
         setUser({ email: firebaseUser.email, uid: firebaseUser.uid, role });
       } else {
