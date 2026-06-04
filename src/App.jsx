@@ -74,19 +74,37 @@ function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   useEffect(() => {
-    const FIRST_ADMIN = import.meta.env.VITE_FIRST_ADMIN_EMAIL ?? "";
+    // Support comma-separated list of admin emails
+    const ADMIN_EMAILS = (import.meta.env.VITE_FIRST_ADMIN_EMAIL ?? "")
+      .split(",")
+      .map((e) => e.trim().toLowerCase())
+      .filter(Boolean);
 
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
         let role = "viewer";
+        const isDesignatedAdmin = ADMIN_EMAILS.includes(
+          firebaseUser.email.toLowerCase()
+        );
         try {
           const roleSnap = await getDoc(doc(db, "userRoles", firebaseUser.uid));
 
           if (roleSnap.exists()) {
             role = roleSnap.data().role ?? "viewer";
+            // Upgrade to admin if email is in the designated admin list
+            if (isDesignatedAdmin && role !== "admin") {
+              role = "admin";
+              await setDoc(
+                doc(db, "userRoles", firebaseUser.uid),
+                { role: "admin" },
+                { merge: true }
+              );
+            }
           } else {
             // Check if a pending invite exists for this email
-            const pendingSnap = await getDoc(doc(db, "pendingRoles", firebaseUser.email));
+            const pendingSnap = await getDoc(
+              doc(db, "pendingRoles", firebaseUser.email)
+            );
             if (pendingSnap.exists()) {
               role = pendingSnap.data().role ?? "viewer";
               await setDoc(doc(db, "userRoles", firebaseUser.uid), {
@@ -95,10 +113,7 @@ function App() {
                 createdAt: serverTimestamp(),
               });
               await deleteDoc(doc(db, "pendingRoles", firebaseUser.email));
-            } else if (
-              FIRST_ADMIN &&
-              firebaseUser.email.toLowerCase() === FIRST_ADMIN.toLowerCase()
-            ) {
+            } else if (isDesignatedAdmin) {
               role = "admin";
               await setDoc(doc(db, "userRoles", firebaseUser.uid), {
                 email: firebaseUser.email,
