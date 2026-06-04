@@ -1,0 +1,53 @@
+/**
+ * index.css
+ * ---------
+ * Global resets and base styles for the Mining & HSE Dashboard.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: #F0F2F5;
+  color: #1A2332;
+}
+
+/* Remove default focus outlines — we apply our own */
+:focus-visible {
+  outline: 2px solid #B8881A;
+  outline-offset: 2px;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #EEF0F4;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #C8CDD6;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #A0A8B4;
+}

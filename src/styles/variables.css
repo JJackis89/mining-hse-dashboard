@@ -1,0 +1,26 @@
+:root {
+  --bg-dark: #F0F2F5;
+  --bg-sidebar: #FFFFFF;
+  --bg-card: #FFFFFF;
+  --bg-card-hover: #F7F8FA;
+  --bg-input: #F0F2F5;
+  --bg-content: #F0F2F5;
+  --border-color: #DDE1E8;
+  --border-light: #EEF0F4;
+  --text-primary: #1A2332;
+  --text-secondary: #4D5A6E;
+  --text-muted: #8B96A6;
+  --accent-orange: #B8881A;
+  --accent-amber: #C9981E;
+  --accent-hover: #9A7210;
+  --accent-blue: #1A74BC;
+  --success: #1E9E52;
+  --warning: #D4820A;
+  --danger: #C0392B;
+  --purple: #7D3C98;
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.10);
+
+  --sidebar-width: 240px;
+  --sidebar-collapsed: 64px;
+  --header-height: 52px;
+}
