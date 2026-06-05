@@ -137,6 +137,144 @@
   color: var(--accent-blue);
 }
 
+/* ── Admin Skeleton Loader ──────────────────────────────────── */
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+.skeleton {
+  display: block;
+  height: 13px;
+  border-radius: 4px;
+  background: var(--border-color);
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+/* ── Admin Filter / Search Bar ──────────────────────────────── */
+.admin-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color);
+  align-items: center;
+}
+.admin-search-input {
+  flex: 1;
+  min-width: 180px;
+  padding: 6px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.admin-search-input:focus { border-color: var(--accent-orange); }
+.admin-search-input::placeholder { color: var(--text-muted); }
+
+.admin-filter-select {
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.admin-filter-select:focus { border-color: var(--accent-orange); }
+
+/* ── Admin Inline Field Input ───────────────────────────────── */
+.admin-field-input {
+  width: 100%;
+  max-width: 130px;
+  padding: 4px 7px;
+  font-size: 12px;
+  font-family: inherit;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.admin-field-input:focus { border-color: var(--accent-orange); }
+.admin-field-input::placeholder { color: var(--text-muted); }
+.admin-field-input:disabled { opacity: 0.5; }
+
+/* ── Admin User Cell ─────────────────────────────────────────── */
+.admin-user-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 180px;
+}
+.admin-user-avatar {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--accent-orange);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-transform: uppercase;
+  user-select: none;
+}
+.admin-user-name  { font-size: 13px; font-weight: 600; color: var(--text-primary); line-height: 1.2; }
+.admin-user-email { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
+
+/* ── Admin Pagination ────────────────────────────────────────── */
+.admin-pagination {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border-color);
+  font-size: 12px;
+  color: var(--text-secondary);
+  flex-wrap: wrap;
+}
+.admin-pagination-btn {
+  min-width: 28px;
+  padding: 3px 7px;
+  font-size: 12px;
+  font-family: inherit;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.admin-pagination-btn:hover    { border-color: var(--accent-orange); color: var(--text-primary); }
+.admin-pagination-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.admin-pagination-btn--active  {
+  background: var(--accent-orange);
+  color: #fff;
+  border-color: var(--accent-orange);
+  font-weight: 600;
+}
+
+/* ── Admin Panel Footer ─────────────────────────────────────── */
+.admin-panel-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border-color);
+  flex-wrap: wrap;
+}
+.admin-sync-msg { font-size: 12px; color: var(--text-secondary); }
+
 /* ── Login Mode Toggle ──────────────────────────────────────── */
 .login-mode-toggle {
   display: flex;

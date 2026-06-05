@@ -1,4 +1,4 @@
-import { useState, useEffect, lazy, Suspense } from "react";
+import { useState, useEffect, lazy, Suspense, useRef } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import {
   onAuthStateChanged,
@@ -68,11 +68,15 @@ function App() {
   const [email, setEmail]               = useState("");
   const [password, setPassword]         = useState("");
   const [confirmPass, setConfirmPass]   = useState("");
+  const [fullName, setFullName]         = useState("");
   const [error, setError]               = useState("");
   const [loginLoading, setLoginLoading] = useState(false);
   const [isSignUp, setIsSignUp]         = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+
+  // Carries fullName from the signup form into the async onAuthStateChanged handler
+  const signupFullNameRef = useRef("");
 
   useEffect(() => {
     // Support comma-separated list of admin emails
@@ -87,11 +91,23 @@ function App() {
           firebaseUser.email.toLowerCase()
         );
 
-        // Designated admins always get admin — Firestore write is a non-blocking side effect
         if (isDesignatedAdmin) {
+          const capturedName = signupFullNameRef.current;
+          signupFullNameRef.current = "";
+          // Write full profile into userRoles so Admin Panel sees them immediately
           setDoc(
             doc(db, "userRoles", firebaseUser.uid),
-            { email: firebaseUser.email, role: "admin", createdAt: serverTimestamp() },
+            {
+              uid: firebaseUser.uid,
+              email: firebaseUser.email,
+              fullName: capturedName,
+              role: "admin",
+              department: "",
+              rank: "",
+              accountStatus: "Active",
+              createdAt: serverTimestamp(),
+              lastLogin: serverTimestamp(),
+            },
             { merge: true }
           ).catch(() => {});
           setUser({ email: firebaseUser.email, uid: firebaseUser.uid, role: "admin" });
@@ -106,26 +122,46 @@ function App() {
 
           if (roleSnap.exists()) {
             role = roleSnap.data().role ?? "viewer";
+            signupFullNameRef.current = "";
+            // Update lastLogin and backfill any missing profile fields for pre-existing accounts
+            const existing = roleSnap.data();
+            const updates = { lastLogin: serverTimestamp() };
+            if (!Object.prototype.hasOwnProperty.call(existing, "accountStatus")) {
+              updates.uid          = firebaseUser.uid;
+              updates.fullName     = existing.fullName     || "";
+              updates.department   = existing.department   || "";
+              updates.rank         = existing.rank         || "";
+              updates.accountStatus = "Active";
+            }
+            setDoc(doc(db, "userRoles", firebaseUser.uid), updates, { merge: true }).catch(() => {});
           } else {
+            // Brand-new user — capture name before clearing the ref
+            const capturedName = signupFullNameRef.current;
+            signupFullNameRef.current = "";
+
             // Check for a pending invite
             const pendingSnap = await getDoc(
               doc(db, "pendingRoles", firebaseUser.email)
             );
             if (pendingSnap.exists()) {
               role = pendingSnap.data().role ?? "viewer";
-              await setDoc(doc(db, "userRoles", firebaseUser.uid), {
-                email: firebaseUser.email,
-                role,
-                createdAt: serverTimestamp(),
-              });
               await deleteDoc(doc(db, "pendingRoles", firebaseUser.email));
             } else {
-              await setDoc(doc(db, "userRoles", firebaseUser.uid), {
-                email: firebaseUser.email,
-                role: "viewer",
-                createdAt: serverTimestamp(),
-              });
+              role = "viewer";
             }
+
+            // Write full user profile to userRoles in a single document
+            await setDoc(doc(db, "userRoles", firebaseUser.uid), {
+              uid: firebaseUser.uid,
+              email: firebaseUser.email,
+              fullName: capturedName,
+              role,
+              department: "",
+              rank: "",
+              accountStatus: "Active",
+              createdAt: serverTimestamp(),
+              lastLogin: serverTimestamp(),
+            });
           }
         } catch (err) {
           console.error("Firestore role lookup failed:", err.code, err.message);
@@ -154,16 +190,22 @@ function App() {
 
   const handleSignUp = async (e) => {
     e.preventDefault();
+    if (!fullName.trim()) {
+      setError("Please enter your full name.");
+      return;
+    }
     if (password !== confirmPass) {
       setError("Passwords do not match.");
       return;
     }
     setError("");
     setLoginLoading(true);
+    signupFullNameRef.current = fullName.trim();
     try {
       await createUserWithEmailAndPassword(auth, email, password);
-      // onAuthStateChanged fires next and creates the role document
+      // onAuthStateChanged fires next and writes the full profile to userRoles
     } catch (err) {
+      signupFullNameRef.current = "";
       setError(AUTH_ERRORS[err.code] || "Registration failed. Please try again.");
       setLoginLoading(false);
     }
@@ -176,6 +218,7 @@ function App() {
     setError("");
     setPassword("");
     setConfirmPass("");
+    setFullName("");
   };
 
   if (authLoading) {
@@ -242,6 +285,22 @@ function App() {
                 aria-required="true"
               />
             </div>
+
+            {isSignUp && (
+              <div className="form-group">
+                <label htmlFor="fullName">Full Name</label>
+                <input
+                  id="fullName"
+                  type="text"
+                  placeholder="Your full name"
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
+                  required
+                  autoComplete="name"
+                  aria-required="true"
+                />
+              </div>
+            )}
 
             <div className="form-group">
               <label htmlFor="password">Password</label>
