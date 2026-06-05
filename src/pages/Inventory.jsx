@@ -426,12 +426,16 @@ function Inventory() {
     let cancelled = false;
     getMaterials()
       .then((rows) => {
-        if (!cancelled) setRecords(rows.map((r) => ({
-          ...r,
-          _total: r.quantity_received != null && r.unit_cost != null
-            ? r.quantity_received * r.unit_cost
-            : null,
-        })));
+        if (!cancelled) setRecords(
+          rows
+            .map((r) => ({
+              ...r,
+              _total: r.quantity_received != null && r.unit_cost != null
+                ? r.quantity_received * r.unit_cost
+                : null,
+            }))
+            .sort((a, b) => (b.date_time_received || 0) - (a.date_time_received || 0))
+        );
       })
       .catch((err) => { if (!cancelled) setError(err.message); })
       .finally(() => { if (!cancelled) setLoading(false); });

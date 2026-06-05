@@ -134,7 +134,8 @@ export const getGarlandPath = () =>
 export const getMaterials = () =>
   queryFeatures(MATERIALS_URL, {
     outFields: "objectid,date_time_received,material_name,category,unit,unit_cost,quantity_received,received_by,remarks,photos,CreationDate",
-    orderBy: "date_time_received DESC",
+    // orderBy omitted — Survey123 FeatureServer does not support orderByFields;
+    // rows are sorted client-side in Inventory.jsx instead.
   });
 
 export const getMaterialsCount = () => queryCount(MATERIALS_URL);
