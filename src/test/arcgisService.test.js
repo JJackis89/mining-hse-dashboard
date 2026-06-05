@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { queryFeatures, LAYERS } from '../services/arcgisService'
+import { queryFeatures, LAYERS, getMaterials } from '../services/arcgisService'
 
 // ─── LAYERS constant ─────────────────────────────────────────
 describe('LAYERS constants', () => {
@@ -115,5 +115,57 @@ describe('queryFeatures', () => {
     await queryFeatures(FAKE_URL, { orderBy: 'CreationDate DESC' })
     const calledUrl = fetch.mock.calls[0][0]
     expect(calledUrl).toContain('orderByFields=CreationDate+DESC')
+  })
+})
+
+// ─── getMaterials field normalisation ───────────────────────
+describe('getMaterials', () => {
+  beforeEach(() => { vi.stubGlobal('fetch', vi.fn()) })
+  afterEach(() => { vi.restoreAllMocks() })
+
+  function mockResponse(attributes) {
+    fetch.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ features: [{ attributes }] }),
+    })
+  }
+
+  it('maps coded-value fields to canonical names when text fields are null', async () => {
+    mockResponse({
+      objectid: 1, material_name: null, field_19: 'Cement',
+      category: null, field_15: 'Construction',
+      unit: null, field_16: 'Bags',
+      quantity_received: 200, supplier: 'Acme',
+    })
+    const [row] = await getMaterials()
+    expect(row.material_name).toBe('Cement')
+    expect(row.category).toBe('Construction')
+    expect(row.unit).toBe('Bags')
+  })
+
+  it('prefers free-text fields over coded-value fields when both are present', async () => {
+    mockResponse({
+      objectid: 2, material_name: 'Custom Material', field_19: 'Cement',
+      category: 'Custom Cat', field_15: 'Construction',
+      unit: 'kg', field_16: 'Bags',
+      quantity_received: 10, supplier: 'Supplier X',
+    })
+    const [row] = await getMaterials()
+    expect(row.material_name).toBe('Custom Material')
+    expect(row.category).toBe('Custom Cat')
+    expect(row.unit).toBe('kg')
+  })
+
+  it('returns null for canonical fields when both text and coded values are absent', async () => {
+    mockResponse({
+      objectid: 3, material_name: null, field_19: null,
+      category: null, field_15: null,
+      unit: null, field_16: null,
+      quantity_received: 5, supplier: null,
+    })
+    const [row] = await getMaterials()
+    expect(row.material_name).toBeNull()
+    expect(row.category).toBeNull()
+    expect(row.unit).toBeNull()
   })
 })

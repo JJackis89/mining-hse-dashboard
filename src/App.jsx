@@ -31,6 +31,48 @@ const AdminPanel     = lazy(() => import("./pages/AdminPanel"));
 
 import "./App.css";
 
+// ─── Registration: resilient profile write ────────────────────
+// Retries setDoc up to 3 times (1.5 s / 3 s backoff), fully non-blocking.
+// onFinalFailure() is called when all attempts are exhausted so the UI
+// can surface an error banner and the fallback collection can be written.
+function writeProfileRetrying(uid, profile, onFinalFailure = null, attempt = 1) {
+  const iso = () => new Date().toISOString();
+  setDoc(doc(db, "userRoles", uid), profile, { merge: true })
+    .then(() =>
+      console.log(`[ARIMA ${iso()}] ✓ Profile synced uid=${uid.slice(0, 8)} (attempt ${attempt})`)
+    )
+    .catch((err) => {
+      console.error(
+        `[ARIMA ${iso()}] ✗ Profile write attempt ${attempt} failed uid=${uid.slice(0, 8)}:`,
+        err.code, err.message
+      );
+      if (attempt < 3) {
+        const delay = attempt * 1500;
+        console.log(`[ARIMA ${iso()}] Retrying in ${delay}ms (${3 - attempt} left)…`);
+        setTimeout(() => writeProfileRetrying(uid, profile, onFinalFailure, attempt + 1), delay);
+      } else {
+        console.error(
+          `[ARIMA ${iso()}] ✗ All retries exhausted uid=${uid.slice(0, 8)}.`,
+          "Root cause: Firestore security rules are blocking writes to userRoles.",
+          "Fix: update rules so authenticated users can create their own userRoles document."
+        );
+        // Fallback: write a minimal stub to failedRegistrations so the admin
+        // can see and approve the account from the Diagnostics tab.
+        const { createdAt: _cAt, lastLogin: _lL, ...stub } = profile;
+        setDoc(doc(db, "failedRegistrations", uid), {
+          ...stub,
+          failedAt: serverTimestamp(),
+          failReason: "permission-denied",
+        }).then(() =>
+          console.log(`[ARIMA ${iso()}] Queued uid=${uid.slice(0, 8)} in failedRegistrations for admin recovery`)
+        ).catch(() =>
+          console.error(`[ARIMA ${iso()}] failedRegistrations write also failed — update Firestore rules.`)
+        );
+        onFinalFailure?.();
+      }
+    });
+}
+
 const AUTH_ERRORS = {
   "auth/invalid-credential":     "Invalid email or password.",
   "auth/user-not-found":         "No account found with this email.",
@@ -74,6 +116,7 @@ function App() {
   const [isSignUp, setIsSignUp]         = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [profileSyncFailed, setProfileSyncFailed] = useState(false);
 
   // Carries fullName from the signup form into the async onAuthStateChanged handler
   const signupFullNameRef = useRef("");
@@ -86,91 +129,125 @@ function App() {
       .filter(Boolean);
 
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      const t0  = Date.now();
+      const iso = () => new Date().toISOString();
+      console.log(`[ARIMA ${iso()}] onAuthStateChanged:`, firebaseUser ? firebaseUser.email : "signed out");
+
       if (firebaseUser) {
         const isDesignatedAdmin = ADMIN_EMAILS.includes(
           firebaseUser.email.toLowerCase()
         );
 
+        const onSyncFail = () => setProfileSyncFailed(true);
+
         if (isDesignatedAdmin) {
           const capturedName = signupFullNameRef.current;
           signupFullNameRef.current = "";
-          // Write full profile into userRoles so Admin Panel sees them immediately
-          setDoc(
-            doc(db, "userRoles", firebaseUser.uid),
-            {
-              uid: firebaseUser.uid,
-              email: firebaseUser.email,
-              fullName: capturedName,
-              role: "admin",
-              department: "",
-              rank: "",
-              accountStatus: "Active",
-              createdAt: serverTimestamp(),
-              lastLogin: serverTimestamp(),
-            },
-            { merge: true }
-          ).catch(() => {});
+          writeProfileRetrying(firebaseUser.uid, {
+            uid:           firebaseUser.uid,
+            email:         firebaseUser.email,
+            fullName:      capturedName,
+            role:          "admin",
+            department:    "",
+            rank:          "",
+            accountStatus: "Active",
+            createdAt:     serverTimestamp(),
+            lastLogin:     serverTimestamp(),
+          }, onSyncFail);
           setUser({ email: firebaseUser.email, uid: firebaseUser.uid, role: "admin" });
           setAuthLoading(false);
+          console.log(`[ARIMA ${iso()}] Auth resolved in ${Date.now() - t0}ms (admin)`);
           return;
         }
 
-        // For everyone else, look up their role from Firestore
         let role = "viewer";
         try {
-          const roleSnap = await getDoc(doc(db, "userRoles", firebaseUser.uid));
+          // Promise.allSettled so a permission-denied on pendingRoles never
+          // crashes the entire read — we fall back gracefully to viewer role.
+          console.log(`[ARIMA ${iso()}] Starting parallel reads…`);
+          const t1 = Date.now();
+          const [roleResult, pendingResult] = await Promise.allSettled([
+            getDoc(doc(db, "userRoles",    firebaseUser.uid)),
+            getDoc(doc(db, "pendingRoles", firebaseUser.email)),
+          ]);
+          console.log(
+            `[ARIMA ${iso()}] Reads done in ${Date.now() - t1}ms —`,
+            `roleStatus=${roleResult.status} pendingStatus=${pendingResult.status}`
+          );
+
+          // If the critical userRoles read itself failed, re-throw to the catch block.
+          if (roleResult.status === "rejected") throw roleResult.reason;
+
+          const roleSnap    = roleResult.value;
+          const pendingSnap = pendingResult.status === "fulfilled" ? pendingResult.value : null;
 
           if (roleSnap.exists()) {
             role = roleSnap.data().role ?? "viewer";
             signupFullNameRef.current = "";
-            // Update lastLogin and backfill any missing profile fields for pre-existing accounts
             const existing = roleSnap.data();
-            const updates = { lastLogin: serverTimestamp() };
+            const updates  = { lastLogin: serverTimestamp() };
             if (!Object.prototype.hasOwnProperty.call(existing, "accountStatus")) {
-              updates.uid          = firebaseUser.uid;
-              updates.fullName     = existing.fullName     || "";
-              updates.department   = existing.department   || "";
-              updates.rank         = existing.rank         || "";
+              updates.uid           = firebaseUser.uid;
+              updates.fullName      = existing.fullName   || "";
+              updates.department    = existing.department || "";
+              updates.rank          = existing.rank       || "";
               updates.accountStatus = "Active";
             }
-            setDoc(doc(db, "userRoles", firebaseUser.uid), updates, { merge: true }).catch(() => {});
+            // lastLogin update — single attempt, not worth retrying
+            setDoc(doc(db, "userRoles", firebaseUser.uid), updates, { merge: true })
+              .catch((err) =>
+                console.error(`[ARIMA ${iso()}] lastLogin update failed:`, err.code, err.message)
+              );
+            console.log(`[ARIMA ${iso()}] Existing user role=${role}`);
           } else {
-            // Brand-new user — capture name before clearing the ref
+            // Brand-new user
             const capturedName = signupFullNameRef.current;
             signupFullNameRef.current = "";
 
-            // Check for a pending invite
-            const pendingSnap = await getDoc(
-              doc(db, "pendingRoles", firebaseUser.email)
-            );
-            if (pendingSnap.exists()) {
+            if (pendingSnap?.exists()) {
               role = pendingSnap.data().role ?? "viewer";
-              await deleteDoc(doc(db, "pendingRoles", firebaseUser.email));
-            } else {
-              role = "viewer";
+              deleteDoc(doc(db, "pendingRoles", firebaseUser.email))
+                .catch((err) =>
+                  console.warn(`[ARIMA ${iso()}] pendingRoles delete failed:`, err.code)
+                );
             }
 
-            // Write full user profile to userRoles in a single document
-            await setDoc(doc(db, "userRoles", firebaseUser.uid), {
-              uid: firebaseUser.uid,
-              email: firebaseUser.email,
-              fullName: capturedName,
+            console.log(`[ARIMA ${iso()}] New user — writing profile role=${role} name="${capturedName}"`);
+            writeProfileRetrying(firebaseUser.uid, {
+              uid:           firebaseUser.uid,
+              email:         firebaseUser.email,
+              fullName:      capturedName,
               role,
-              department: "",
-              rank: "",
+              department:    "",
+              rank:          "",
               accountStatus: "Active",
-              createdAt: serverTimestamp(),
-              lastLogin: serverTimestamp(),
-            });
+              createdAt:     serverTimestamp(),
+              lastLogin:     serverTimestamp(),
+            }, onSyncFail);
           }
         } catch (err) {
-          console.error("Firestore role lookup failed:", err.code, err.message);
+          console.error(`[ARIMA ${iso()}] Read error:`, err.code, err.message);
+          const recoveryName = signupFullNameRef.current;
+          signupFullNameRef.current = "";
+          writeProfileRetrying(firebaseUser.uid, {
+            uid:           firebaseUser.uid,
+            email:         firebaseUser.email,
+            fullName:      recoveryName || "",
+            role,
+            department:    "",
+            rank:          "",
+            accountStatus: "Active",
+            createdAt:     serverTimestamp(),
+            lastLogin:     serverTimestamp(),
+          }, onSyncFail);
         }
+
         setUser({ email: firebaseUser.email, uid: firebaseUser.uid, role });
       } else {
         setUser(null);
       }
       setAuthLoading(false);
+      console.log(`[ARIMA ${iso()}] Auth complete in ${Date.now() - t0}ms`);
     });
 
     return unsubscribe;
@@ -378,6 +455,20 @@ function App() {
             menuOpen={mobileSidebarOpen}
           />
 
+          {profileSyncFailed && (
+            <div className="profile-sync-banner" role="alert">
+              <span>
+                Your account profile could not be saved to the database after several attempts.
+                You are signed in, but you may not appear in the Admin Panel until an administrator
+                approves your registration from the <strong>Diagnostics</strong> tab.
+              </span>
+              <button
+                className="profile-sync-banner__dismiss"
+                onClick={() => setProfileSyncFailed(false)}
+                aria-label="Dismiss"
+              >×</button>
+            </div>
+          )}
           <main className="app-content">
             <Suspense fallback={<PageLoader />}>
               <Routes>

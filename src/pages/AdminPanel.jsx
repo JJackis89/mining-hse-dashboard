@@ -8,11 +8,28 @@ import {
   createPendingInvite,
   revokePendingInvite,
   syncLegacyUsers,
+  testFirestoreWrite,
+  subscribeToFailedRegistrations,
+  approveFailedRegistration,
 } from "../services/adminService";
 import { ROLES, ROLE_LABELS, ROUTE_ACCESS, NAV_ITEMS } from "../utils/permissions";
 
-const PAGE_SIZE = 20;
-const STATUS_OPTIONS = ["Active", "Inactive", "Suspended"];
+const PAGE_SIZE      = 20;
+const STATUS_OPTIONS = ["Active", "Pending Approval", "Disabled"];
+
+// Maps accountStatus to a short CSS key used in className
+const STATUS_KEY = {
+  "Active":           "active",
+  "Pending Approval": "pending",
+  "Disabled":         "disabled",
+};
+
+function tsMs(val) {
+  if (!val) return 0;
+  if (typeof val.toMillis === "function") return val.toMillis();
+  if (typeof val === "number") return val;
+  return 0;
+}
 
 function fmt(ts) {
   if (!ts) return "—";
@@ -21,14 +38,14 @@ function fmt(ts) {
 }
 
 function initials(name, email) {
-  if (name && name.trim()) {
+  if (name?.trim()) {
     return name.trim().split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
   }
   return ((email || "?")[0]).toUpperCase();
 }
 
 function SkeletonRow() {
-  const widths = [65, 45, 35, 35, 30, 35, 40];
+  const widths = [65, 35, 35, 35, 35, 30, 30, 35];
   return (
     <tr aria-hidden="true">
       {widths.map((w, i) => (
@@ -38,9 +55,22 @@ function SkeletonRow() {
   );
 }
 
+// ─── Sortable column header ───────────────────────────────────
+function SortTh({ label, field, sortField, sortDir, onSort, ...rest }) {
+  const active = sortField === field;
+  return (
+    <th scope="col" className="admin-sort-th" onClick={() => onSort(field)} {...rest}>
+      {label}
+      <span className="admin-sort-icon" aria-hidden="true">
+        {active ? (sortDir === "asc" ? " ↑" : " ↓") : " ↕"}
+      </span>
+    </th>
+  );
+}
+
 // ─── Role Access Matrix ───────────────────────────────────────
 function AccessMatrix() {
-  const pages = NAV_ITEMS.filter((n) => n.path !== "/admin");
+  const pages     = NAV_ITEMS.filter((n) => n.path !== "/admin");
   const adminItem = NAV_ITEMS.find((n) => n.path === "/admin");
   return (
     <div className="admin-matrix-wrap">
@@ -84,7 +114,7 @@ function AccessMatrix() {
 
 // ─── Main Admin Panel ─────────────────────────────────────────
 function AdminPanel() {
-  const user = useUser();
+  const user      = useUser();
   const [activeTab, setActiveTab] = useState("users");
 
   // ── Users ───────────────────────────────────────────────────
@@ -95,17 +125,25 @@ function AdminPanel() {
   const [saving, setSaving]                 = useState({});
   const [saveMsg, setSaveMsg]               = useState({});
 
-  // ── Search & Filter ─────────────────────────────────────────
+  // ── Search, Filter & Sort ───────────────────────────────────
   const [search, setSearch]             = useState("");
   const [filterRole, setFilterRole]     = useState("");
   const [filterStatus, setFilterStatus] = useState("");
   const [filterDept, setFilterDept]     = useState("");
-  const [filterRank, setFilterRank]     = useState("");
+  const [sortField, setSortField]       = useState("createdAt");
+  const [sortDir, setSortDir]           = useState("desc");
   const [page, setPage]                 = useState(1);
 
   // ── Migration ───────────────────────────────────────────────
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState("");
+
+  // ── Diagnostics ─────────────────────────────────────────────
+  const [lastUpdated, setLastUpdated]       = useState(null);
+  const [writeTest,   setWriteTest]         = useState(null);
+  const [writeTesting, setWriteTesting]     = useState(false);
+  const [failedRegs,  setFailedRegs]        = useState([]);
+  const [approving,   setApproving]         = useState({});
 
   // ── Invites ─────────────────────────────────────────────────
   const [invites, setInvites]               = useState([]);
@@ -117,11 +155,25 @@ function AdminPanel() {
   const [inviteMsg, setInviteMsg]           = useState("");
   const [revoking, setRevoking]             = useState({});
 
-  // Real-time subscription — replaces one-shot getDocs
+  // Real-time subscription — track last snapshot time for diagnostics
   useEffect(() => {
     const unsub = subscribeToUsers(
-      (data) => { setUsers(data); setUsersLoading(false); setUsersError(null); },
-      (err)  => { setUsersError(err.message); setUsersLoading(false); }
+      (data) => {
+        setUsers(data);
+        setUsersLoading(false);
+        setUsersError(null);
+        setLastUpdated(new Date());
+      },
+      (err) => { setUsersError(err.message); setUsersLoading(false); }
+    );
+    return unsub;
+  }, []);
+
+  // Subscribe to failed registrations (accounts that couldn't write to userRoles)
+  useEffect(() => {
+    const unsub = subscribeToFailedRegistrations(
+      (data) => setFailedRegs(data),
+      (err)  => console.warn("[ARIMA] failedRegistrations read error:", err.message)
     );
     return unsub;
   }, []);
@@ -138,17 +190,13 @@ function AdminPanel() {
     if (activeTab === "invites") loadInvites();
   }, [activeTab, loadInvites]);
 
-  // Derived filter options
+  // ── Derived filter options ───────────────────────────────────
   const departments = useMemo(
     () => [...new Set(users.map((u) => u.department).filter(Boolean))].sort(),
     [users]
   );
-  const ranks = useMemo(
-    () => [...new Set(users.map((u) => u.rank).filter(Boolean))].sort(),
-    [users]
-  );
 
-  // Client-side search + filter
+  // ── Client-side filter ───────────────────────────────────────
   const filtered = useMemo(() => {
     let list = users;
     if (search.trim()) {
@@ -156,21 +204,72 @@ function AdminPanel() {
       list = list.filter(
         (u) =>
           (u.fullName || "").toLowerCase().includes(s) ||
-          (u.email    || "").toLowerCase().includes(s)
+          (u.email    || "").toLowerCase().includes(s) ||
+          (u.department || "").toLowerCase().includes(s)
       );
     }
     if (filterRole)   list = list.filter((u) => u.role === filterRole);
     if (filterStatus) list = list.filter((u) => (u.accountStatus || "Active") === filterStatus);
     if (filterDept)   list = list.filter((u) => u.department === filterDept);
-    if (filterRank)   list = list.filter((u) => u.rank === filterRank);
     return list;
-  }, [users, search, filterRole, filterStatus, filterDept, filterRank]);
+  }, [users, search, filterRole, filterStatus, filterDept]);
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const paged      = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  // ── Client-side sort ─────────────────────────────────────────
+  const sorted = useMemo(() => {
+    const list = [...filtered];
+    list.sort((a, b) => {
+      let va, vb;
+      switch (sortField) {
+        case "name":
+          va = (a.fullName || a.email || "").toLowerCase();
+          vb = (b.fullName || b.email || "").toLowerCase();
+          break;
+        case "role":
+          va = ROLES.indexOf(a.role ?? "viewer");
+          vb = ROLES.indexOf(b.role ?? "viewer");
+          break;
+        case "status":
+          va = a.accountStatus || "Active";
+          vb = b.accountStatus || "Active";
+          break;
+        case "lastLogin":
+          va = tsMs(a.lastLogin);
+          vb = tsMs(b.lastLogin);
+          break;
+        case "createdAt":
+        default:
+          va = tsMs(a.createdAt);
+          vb = tsMs(b.createdAt);
+          break;
+      }
+      if (va < vb) return sortDir === "asc" ? -1 : 1;
+      if (va > vb) return sortDir === "asc" ? 1  : -1;
+      return 0;
+    });
+    return list;
+  }, [filtered, sortField, sortDir]);
 
-  // Reset to page 1 whenever filters change
-  useEffect(() => setPage(1), [search, filterRole, filterStatus, filterDept, filterRank]);
+  const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
+  const paged      = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  // Reset to page 1 when filters or sort change
+  useEffect(() => setPage(1), [search, filterRole, filterStatus, filterDept, sortField, sortDir]);
+
+  // ── Sort handler ─────────────────────────────────────────────
+  const handleSort = useCallback((field) => {
+    setSortField((prev) => {
+      if (prev === field) {
+        setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+        return prev;
+      }
+      setSortDir("asc");
+      return field;
+    });
+  }, []);
+
+  // ── KPI counts ───────────────────────────────────────────────
+  const activeCount  = useMemo(() => users.filter((u) => (u.accountStatus || "Active") === "Active").length, [users]);
+  const pendingCount = useMemo(() => users.filter((u) => u.accountStatus === "Pending Approval").length, [users]);
 
   // ── Field editing ────────────────────────────────────────────
   const handleFieldChange = (uid, field, value) => {
@@ -189,10 +288,10 @@ function AdminPanel() {
       if (role) await updateUserRole(uid, role);
       if (Object.keys(profileChanges).length > 0) await updateUserProfile(uid, profileChanges);
       setPendingChanges((p) => { const n = { ...p }; delete n[uid]; return n; });
-      setSaveMsg((m) => ({ ...m, [uid]: "Saved" }));
-      setTimeout(() => setSaveMsg((m) => { const n = { ...m }; delete n[uid]; return n; }), 2000);
+      setSaveMsg((m) => ({ ...m, [uid]: "ok" }));
+      setTimeout(() => setSaveMsg((m) => { const n = { ...m }; delete n[uid]; return n; }), 2500);
     } catch {
-      setSaveMsg((m) => ({ ...m, [uid]: "Error" }));
+      setSaveMsg((m) => ({ ...m, [uid]: "err" }));
     } finally {
       setSaving((s) => { const n = { ...s }; delete n[uid]; return n; });
     }
@@ -207,7 +306,7 @@ function AdminPanel() {
     setInviteMsg("");
     try {
       await createPendingInvite(trimmed, inviteRole);
-      setInviteMsg(`Invite set for ${trimmed}. They will receive the "${ROLE_LABELS[inviteRole]}" role when they sign up.`);
+      setInviteMsg(`Invite set for ${trimmed}. They will receive "${ROLE_LABELS[inviteRole]}" when they sign up.`);
       setInviteEmail("");
       setInviteRole("viewer");
       await loadInvites();
@@ -229,24 +328,37 @@ function AdminPanel() {
     }
   };
 
-  // ── Migration ────────────────────────────────────────────────
+  // ── Sync ─────────────────────────────────────────────────────
   const handleSync = async () => {
     setSyncing(true);
     setSyncMsg("");
     try {
       const count = await syncLegacyUsers();
-      setSyncMsg(count > 0 ? `Synced ${count} legacy user(s).` : "All users already up to date.");
+      setSyncMsg(
+        count > 0
+          ? `Backfilled ${count} user profile${count !== 1 ? "s" : ""} with missing fields.`
+          : "All user profiles are up to date."
+      );
     } catch (err) {
       setSyncMsg(`Sync failed: ${err.message}`);
     } finally {
       setSyncing(false);
-      setTimeout(() => setSyncMsg(""), 5000);
+      setTimeout(() => setSyncMsg(""), 6000);
     }
   };
 
+  const clearFilters = () => {
+    setSearch("");
+    setFilterRole("");
+    setFilterStatus("");
+    setFilterDept("");
+  };
+  const hasFilters = search || filterRole || filterStatus || filterDept;
+
   return (
     <div className="page-admin">
-      {/* ── KPI row ─────────────────────────────── */}
+
+      {/* ── KPI row ───────────────────────────────── */}
       <section className="kpi-grid" style={{ marginBottom: 20 }} aria-label="Admin summary">
         <div className="kpi-card">
           <div className="kpi-icon" style={{ background: "rgba(125,60,152,0.1)", color: "var(--purple)" }} aria-hidden="true" />
@@ -261,6 +373,22 @@ function AdminPanel() {
           </div>
         </div>
         <div className="kpi-card">
+          <div className="kpi-icon" style={{ background: "rgba(30,158,82,0.1)", color: "#1E9E52" }} aria-hidden="true" />
+          <div className="kpi-data">
+            <span className="kpi-value">{usersLoading ? "—" : activeCount}</span>
+            <span className="kpi-title">Active</span>
+            <span className="kpi-trend">Cleared users</span>
+          </div>
+        </div>
+        <div className="kpi-card">
+          <div className="kpi-icon" style={{ background: "rgba(212,130,10,0.1)", color: "var(--warning)" }} aria-hidden="true" />
+          <div className="kpi-data">
+            <span className="kpi-value">{usersLoading ? "—" : pendingCount}</span>
+            <span className="kpi-title">Pending Approval</span>
+            <span className="kpi-trend">Awaiting review</span>
+          </div>
+        </div>
+        <div className="kpi-card">
           <div className="kpi-icon" style={{ background: "rgba(26,116,188,0.1)", color: "#1A74BC" }} aria-hidden="true" />
           <div className="kpi-data">
             <span className="kpi-value">{invites.length || "—"}</span>
@@ -268,17 +396,9 @@ function AdminPanel() {
             <span className="kpi-trend">Awaiting sign-up</span>
           </div>
         </div>
-        <div className="kpi-card">
-          <div className="kpi-icon" style={{ background: "rgba(30,158,82,0.1)", color: "#1E9E52" }} aria-hidden="true" />
-          <div className="kpi-data">
-            <span className="kpi-value">{ROLES.length}</span>
-            <span className="kpi-title">Available Roles</span>
-            <span className="kpi-trend">Admin · Supervisor · Storekeeper · Viewer</span>
-          </div>
-        </div>
       </section>
 
-      {/* ── Main Panel ──────────────────────────── */}
+      {/* ── Main Panel ────────────────────────────── */}
       <section className="panel" aria-label="Admin panel">
         <div className="panel-header">
           <h3>System Administration</h3>
@@ -288,9 +408,10 @@ function AdminPanel() {
         {/* Tab bar */}
         <div className="inv-tab-bar" role="tablist" aria-label="Admin sections">
           {[
-            { id: "users",   label: "Active Users" },
-            { id: "invites", label: "Invite Users" },
-            { id: "access",  label: "Role Access Guide" },
+            { id: "users",       label: "Users" },
+            { id: "invites",     label: "Invite Users" },
+            { id: "diagnostics", label: "Diagnostics" },
+            { id: "access",      label: "Role Access Guide" },
           ].map((t) => (
             <button
               key={t.id}
@@ -300,20 +421,23 @@ function AdminPanel() {
               onClick={() => setActiveTab(t.id)}
             >
               {t.label}
+              {t.id === "users" && pendingCount > 0 && (
+                <span className="admin-tab-badge">{pendingCount}</span>
+              )}
             </button>
           ))}
         </div>
 
-        {/* ── Active Users ─────────────────────── */}
+        {/* ── Users tab ─────────────────────────── */}
         {activeTab === "users" && (
           <div>
-            {/* Search & Filter bar — only shown when data is ready */}
+            {/* Search & Filter bar */}
             {!usersLoading && !usersError && (
               <div className="admin-filter-bar">
                 <input
                   type="search"
                   className="admin-search-input"
-                  placeholder="Search by name or email…"
+                  placeholder="Search by name, email or department…"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   aria-label="Search users"
@@ -353,30 +477,8 @@ function AdminPanel() {
                     ))}
                   </select>
                 )}
-                {ranks.length > 0 && (
-                  <select
-                    className="admin-filter-select"
-                    value={filterRank}
-                    onChange={(e) => setFilterRank(e.target.value)}
-                    aria-label="Filter by rank"
-                  >
-                    <option value="">All Ranks</option>
-                    {ranks.map((r) => (
-                      <option key={r} value={r}>{r}</option>
-                    ))}
-                  </select>
-                )}
-                {(search || filterRole || filterStatus || filterDept || filterRank) && (
-                  <button
-                    className="admin-refresh-btn"
-                    onClick={() => {
-                      setSearch("");
-                      setFilterRole("");
-                      setFilterStatus("");
-                      setFilterDept("");
-                      setFilterRank("");
-                    }}
-                  >
+                {hasFilters && (
+                  <button className="admin-refresh-btn" onClick={clearFilters}>
                     Clear
                   </button>
                 )}
@@ -389,13 +491,9 @@ function AdminPanel() {
                 <table className="data-table" aria-busy="true" aria-label="Loading users">
                   <thead>
                     <tr>
-                      <th>User</th>
-                      <th>Role</th>
-                      <th>Status</th>
-                      <th>Department</th>
-                      <th>Rank</th>
-                      <th>Member Since</th>
-                      <th>Actions</th>
+                      <th>User</th><th>Role</th><th>Status</th>
+                      <th>Department</th><th>Rank</th>
+                      <th>Member Since</th><th>Last Login</th><th>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -413,7 +511,7 @@ function AdminPanel() {
               </div>
             )}
 
-            {!usersLoading && !usersError && filtered.length === 0 && (
+            {!usersLoading && !usersError && sorted.length === 0 && (
               <div className="empty-state" style={{ padding: "40px 20px" }}>
                 <p>
                   {users.length === 0
@@ -423,17 +521,18 @@ function AdminPanel() {
               </div>
             )}
 
-            {!usersLoading && !usersError && filtered.length > 0 && (
+            {!usersLoading && !usersError && sorted.length > 0 && (
               <div className="table-scroll">
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th scope="col">User</th>
-                      <th scope="col">Role</th>
-                      <th scope="col">Status</th>
+                      <SortTh label="User"         field="name"      sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                      <SortTh label="Role"         field="role"      sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                      <SortTh label="Status"       field="status"    sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                       <th scope="col">Department</th>
                       <th scope="col">Rank</th>
-                      <th scope="col">Member Since</th>
+                      <SortTh label="Member Since" field="createdAt" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
+                      <SortTh label="Last Login"   field="lastLogin" sortField={sortField} sortDir={sortDir} onSort={handleSort} />
                       <th scope="col">Actions</th>
                     </tr>
                   </thead>
@@ -448,14 +547,14 @@ function AdminPanel() {
                       const displayStatus = changes.accountStatus ?? u.accountStatus ?? "Active";
                       const displayDept   = changes.department    ?? u.department    ?? "";
                       const displayRank   = changes.rank          ?? u.rank          ?? "";
+                      const statusKey     = STATUS_KEY[displayStatus] ?? "active";
 
                       return (
                         <tr key={u.id} className={isMe ? "row--selected" : ""}>
+                          {/* User cell */}
                           <td>
                             <div className="admin-user-cell">
-                              <div className="admin-user-avatar">
-                                {initials(u.fullName, u.email)}
-                              </div>
+                              <div className="admin-user-avatar">{initials(u.fullName, u.email)}</div>
                               <div>
                                 <div className="admin-user-name">
                                   {u.fullName || u.email || "—"}
@@ -467,6 +566,8 @@ function AdminPanel() {
                               </div>
                             </div>
                           </td>
+
+                          {/* Role */}
                           <td>
                             <select
                               className="admin-role-select"
@@ -480,19 +581,29 @@ function AdminPanel() {
                               ))}
                             </select>
                           </td>
+
+                          {/* Status — dot badge + select */}
                           <td>
-                            <select
-                              className="admin-role-select"
-                              value={displayStatus}
-                              onChange={(e) => handleFieldChange(u.id, "accountStatus", e.target.value)}
-                              disabled={isMe || saving[u.id]}
-                              aria-label={`Status for ${u.email}`}
-                            >
-                              {STATUS_OPTIONS.map((s) => (
-                                <option key={s} value={s}>{s}</option>
-                              ))}
-                            </select>
+                            <div className="admin-status-cell">
+                              <span
+                                className={`admin-status-dot admin-status-dot--${statusKey}`}
+                                aria-label={displayStatus}
+                              />
+                              <select
+                                className="admin-role-select"
+                                value={displayStatus}
+                                onChange={(e) => handleFieldChange(u.id, "accountStatus", e.target.value)}
+                                disabled={isMe || saving[u.id]}
+                                aria-label={`Status for ${u.email}`}
+                              >
+                                {STATUS_OPTIONS.map((s) => (
+                                  <option key={s} value={s}>{s}</option>
+                                ))}
+                              </select>
+                            </div>
                           </td>
+
+                          {/* Department */}
                           <td>
                             <input
                               className="admin-field-input"
@@ -504,6 +615,8 @@ function AdminPanel() {
                               aria-label={`Department for ${u.email}`}
                             />
                           </td>
+
+                          {/* Rank */}
                           <td>
                             <input
                               className="admin-field-input"
@@ -515,9 +628,18 @@ function AdminPanel() {
                               aria-label={`Rank for ${u.email}`}
                             />
                           </td>
-                          <td className="mono" style={{ fontSize: 12 }}>
+
+                          {/* Member Since */}
+                          <td className="mono" style={{ fontSize: 12, whiteSpace: "nowrap" }}>
                             {fmt(u.createdAt)}
                           </td>
+
+                          {/* Last Login */}
+                          <td className="mono" style={{ fontSize: 12, whiteSpace: "nowrap", color: "var(--text-muted)" }}>
+                            {fmt(u.lastLogin)}
+                          </td>
+
+                          {/* Actions */}
                           <td>
                             {isMe ? (
                               <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
@@ -533,8 +655,8 @@ function AdminPanel() {
                                   {saving[u.id] ? "Saving…" : "Save"}
                                 </button>
                                 {msg && (
-                                  <span className={`admin-save-msg ${msg === "Saved" ? "admin-save-msg--ok" : "admin-save-msg--err"}`}>
-                                    {msg}
+                                  <span className={`admin-save-msg ${msg === "ok" ? "admin-save-msg--ok" : "admin-save-msg--err"}`}>
+                                    {msg === "ok" ? "Saved" : "Error"}
                                   </span>
                                 )}
                               </div>
@@ -556,9 +678,7 @@ function AdminPanel() {
                   onClick={() => setPage((p) => Math.max(1, p - 1))}
                   disabled={page === 1}
                   aria-label="Previous page"
-                >
-                  ‹
-                </button>
+                >‹</button>
                 {Array.from({ length: totalPages }, (_, i) => i + 1)
                   .filter((p) => p === 1 || p === totalPages || Math.abs(p - page) <= 1)
                   .reduce((acc, p, idx, arr) => {
@@ -576,9 +696,7 @@ function AdminPanel() {
                         onClick={() => setPage(item)}
                         aria-label={`Page ${item}`}
                         aria-current={item === page ? "page" : undefined}
-                      >
-                        {item}
-                      </button>
+                      >{item}</button>
                     )
                   )}
                 <button
@@ -586,11 +704,9 @@ function AdminPanel() {
                   onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
                   disabled={page === totalPages}
                   aria-label="Next page"
-                >
-                  ›
-                </button>
-                <span style={{ marginLeft: 8, color: "var(--text-muted)" }}>
-                  {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, filtered.length)} of {filtered.length}
+                >›</button>
+                <span style={{ marginLeft: 8, fontSize: 12, color: "var(--text-muted)" }}>
+                  {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, sorted.length)} of {sorted.length}
                 </span>
               </div>
             )}
@@ -598,7 +714,7 @@ function AdminPanel() {
             {/* Footer */}
             <div className="admin-panel-footer">
               <button className="admin-refresh-btn" onClick={handleSync} disabled={syncing}>
-                {syncing ? "Syncing…" : "Sync Legacy Users"}
+                {syncing ? "Syncing…" : "Repair Missing Profiles"}
               </button>
               {syncMsg && <span className="admin-sync-msg">{syncMsg}</span>}
               <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-muted)" }}>
@@ -608,7 +724,7 @@ function AdminPanel() {
           </div>
         )}
 
-        {/* ── Invite Users ─────────────────────── */}
+        {/* ── Invites tab ────────────────────────── */}
         {activeTab === "invites" && (
           <div>
             <div className="admin-invite-form-wrap">
@@ -703,12 +819,250 @@ function AdminPanel() {
           </div>
         )}
 
-        {/* ── Role Access Guide ────────────────── */}
+        {/* ── Diagnostics tab ───────────────────── */}
+        {activeTab === "diagnostics" && (() => {
+          const missingEmail      = users.filter((u) => !u.email).length;
+          const missingCreatedAt  = users.filter((u) => !u.createdAt).length;
+          const missingStatus     = users.filter((u) => !u.accountStatus).length;
+          const missingName       = users.filter((u) => !u.fullName?.trim()).length;
+          const incompleteCount   = users.filter(
+            (u) => !u.email || !u.createdAt || !u.accountStatus
+          ).length;
+
+          const roleCounts = ["admin", "supervisor", "storekeeper", "viewer"].map((r) => ({
+            role: r,
+            count: users.filter((u) => u.role === r).length,
+          }));
+
+          const handleTestWrite = async () => {
+            setWriteTesting(true);
+            setWriteTest(null);
+            const result = await testFirestoreWrite(user?.uid || "test");
+            setWriteTest(result);
+            setWriteTesting(false);
+          };
+
+          return (
+            <div className="diag-wrap">
+              <h4 className="admin-section-title">Registration &amp; Sync Diagnostics</h4>
+              <p className="admin-section-desc">
+                All counts are derived from the live Firestore <code>userRoles</code> collection.
+                Firebase Auth user count requires the Admin SDK and cannot be read from the browser.
+              </p>
+
+              {/* Stat grid */}
+              <div className="diag-stat-grid">
+                <div className="diag-stat">
+                  <span className="diag-stat-value">{usersLoading ? "—" : users.length}</span>
+                  <span className="diag-stat-label">Firestore Users</span>
+                </div>
+                <div className="diag-stat">
+                  <span className="diag-stat-value diag-ok">{usersLoading ? "—" : activeCount}</span>
+                  <span className="diag-stat-label">Active</span>
+                </div>
+                <div className="diag-stat">
+                  <span className="diag-stat-value diag-warn">{usersLoading ? "—" : pendingCount}</span>
+                  <span className="diag-stat-label">Pending Approval</span>
+                </div>
+                <div className="diag-stat">
+                  <span className={`diag-stat-value ${incompleteCount > 0 ? "diag-err" : "diag-ok"}`}>
+                    {usersLoading ? "—" : incompleteCount}
+                  </span>
+                  <span className="diag-stat-label">Incomplete Profiles</span>
+                </div>
+                <div className="diag-stat">
+                  <span className={`diag-stat-value ${missingEmail > 0 ? "diag-err" : "diag-ok"}`}>
+                    {usersLoading ? "—" : missingEmail}
+                  </span>
+                  <span className="diag-stat-label">Missing Email</span>
+                </div>
+                <div className="diag-stat">
+                  <span className={`diag-stat-value ${missingCreatedAt > 0 ? "diag-warn" : "diag-ok"}`}>
+                    {usersLoading ? "—" : missingCreatedAt}
+                  </span>
+                  <span className="diag-stat-label">Missing createdAt</span>
+                </div>
+                <div className="diag-stat">
+                  <span className={`diag-stat-value ${missingStatus > 0 ? "diag-warn" : "diag-ok"}`}>
+                    {usersLoading ? "—" : missingStatus}
+                  </span>
+                  <span className="diag-stat-label">Missing Status</span>
+                </div>
+                <div className="diag-stat">
+                  <span className="diag-stat-value diag-muted">{usersLoading ? "—" : missingName}</span>
+                  <span className="diag-stat-label">Missing Full Name</span>
+                </div>
+              </div>
+
+              {/* Role breakdown */}
+              <h4 className="admin-section-title" style={{ marginTop: 20 }}>Users by Role</h4>
+              <div className="diag-role-row">
+                {roleCounts.map(({ role, count }) => (
+                  <div key={role} className="diag-role-pill">
+                    <span className="diag-role-name">{role}</span>
+                    <span className="diag-role-count">{usersLoading ? "—" : count}</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Last snapshot */}
+              <div className="diag-meta">
+                <span>Last snapshot update:</span>
+                <strong>
+                  {lastUpdated
+                    ? lastUpdated.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+                    : "—"}
+                </strong>
+              </div>
+
+              {/* Firestore write test */}
+              <h4 className="admin-section-title" style={{ marginTop: 20 }}>Firestore Write-Access Test</h4>
+              <p className="admin-section-desc">
+                Verifies that this browser can write to Firestore. A write failure here
+                means Firestore security rules are blocking new user profile creation —
+                the most common reason new users do not appear in Admin Panel.
+              </p>
+              <div className="diag-test-row">
+                <button
+                  className="admin-refresh-btn"
+                  onClick={handleTestWrite}
+                  disabled={writeTesting}
+                >
+                  {writeTesting ? "Testing…" : "Run Write Test"}
+                </button>
+                {writeTest && (
+                  <span className={`diag-test-result ${writeTest.ok ? "diag-ok" : "diag-err"}`}>
+                    {writeTest.ok
+                      ? `PASS — write + delete completed in ${writeTest.ms}ms`
+                      : `FAIL — ${writeTest.error}: ${writeTest.message}`}
+                  </span>
+                )}
+              </div>
+              {writeTest && !writeTest.ok && (
+                <div className="diag-rules-hint">
+                  <strong>Fix:</strong> Open Firebase Console → Firestore → Rules and ensure
+                  authenticated users can create their own <code>userRoles</code> document:
+                  <pre className="diag-rules-pre">{`rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /userRoles/{uid} {
+      allow read  : if request.auth != null;
+      allow create: if request.auth.uid == uid;
+      allow update: if request.auth.uid == uid
+                    || get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data.role == 'admin';
+      allow delete: if get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    match /pendingRoles/{email} {
+      allow read, write: if request.auth != null
+                         && get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data.role == 'admin';
+      allow delete: if request.auth != null;
+    }
+
+    match /_diagnostics/{id} {
+      allow read, write, delete: if request.auth != null;
+    }
+
+    match /{document=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}`}</pre>
+                </div>
+              )}
+
+              {/* Failed registrations recovery */}
+              <h4 className="admin-section-title" style={{ marginTop: 20 }}>
+                Pending Registration Approvals
+                {failedRegs.length > 0 && (
+                  <span className="admin-tab-badge" style={{ marginLeft: 8 }}>{failedRegs.length}</span>
+                )}
+              </h4>
+              <p className="admin-section-desc">
+                Accounts created in Firebase Auth that could not write their profile to Firestore
+                (typically due to security rules). Click <strong>Approve</strong> to create their
+                profile using your admin credentials.
+              </p>
+              {failedRegs.length === 0 ? (
+                <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 8 }}>
+                  No pending registration approvals.
+                </p>
+              ) : (
+                <div className="table-scroll" style={{ marginTop: 8 }}>
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Email</th>
+                        <th>Full Name</th>
+                        <th>UID</th>
+                        <th>Failed At</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {failedRegs.map((entry) => {
+                        const isApproving = approving[entry.id];
+                        return (
+                          <tr key={entry.id}>
+                            <td className="bold">{entry.email || "—"}</td>
+                            <td>{entry.fullName || "—"}</td>
+                            <td className="mono" style={{ fontSize: 11 }}>{entry.id.slice(0, 12)}…</td>
+                            <td className="mono" style={{ fontSize: 11 }}>
+                              {entry.failedAt
+                                ? (entry.failedAt.toDate
+                                    ? entry.failedAt.toDate().toLocaleString("en-GB")
+                                    : new Date(entry.failedAt).toLocaleString("en-GB"))
+                                : "—"}
+                            </td>
+                            <td>
+                              <button
+                                className="admin-save-btn"
+                                disabled={isApproving}
+                                onClick={async () => {
+                                  setApproving((a) => ({ ...a, [entry.id]: true }));
+                                  try {
+                                    await approveFailedRegistration(entry, entry.role || "viewer");
+                                  } catch (err) {
+                                    console.error("[ARIMA] Approve failed:", err.message);
+                                  } finally {
+                                    setApproving((a) => { const n = { ...a }; delete n[entry.id]; return n; });
+                                  }
+                                }}
+                              >
+                                {isApproving ? "Approving…" : "Approve"}
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Repair button */}
+              <h4 className="admin-section-title" style={{ marginTop: 20 }}>Repair Incomplete Profiles</h4>
+              <p className="admin-section-desc">
+                Backfills any missing fields on existing <code>userRoles</code> documents.
+                Run this after updating security rules to fix any accounts that failed to sync.
+              </p>
+              <div className="diag-test-row">
+                <button className="admin-refresh-btn" onClick={handleSync} disabled={syncing}>
+                  {syncing ? "Repairing…" : "Repair Missing Fields"}
+                </button>
+                {syncMsg && <span className="admin-sync-msg">{syncMsg}</span>}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ── Role Access Guide tab ─────────────── */}
         {activeTab === "access" && (
           <div style={{ padding: "16px" }}>
             <p className="admin-section-desc" style={{ marginBottom: 16 }}>
               This table shows which sections of the platform each role can access.
-              Administrators can update roles at any time in the Active Users tab.
+              Administrators can update roles at any time in the Users tab.
             </p>
             <AccessMatrix />
           </div>

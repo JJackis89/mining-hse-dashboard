@@ -15,6 +15,17 @@
  *
  * ACTIVE SURVEY123 LAYERS:
  *   Materials Receipt Form   (MATERIALS_URL)
+ *     Portal item ID: a3ab90831b764ec4b099a1ff729e0ac3
+ *     Canonical fields used by this app:
+ *       objectid, globalid, date_time_received, material_name, category, unit,
+ *       quantity_received, received_by, remarks, photos, supplier, CreationDate, Creator
+ *
+ *     FIELD ALIAS NOTE — Survey123 stores form selections in coded-value fields:
+ *       field_19 → material_name   (Material Name dropdown)
+ *       field_15 → category        (Category dropdown)
+ *       field_16 → unit            (Unit dropdown)
+ *     getMaterials() normalises these onto the canonical names so no other code needs
+ *     to know about field_15/16/19.  Free-text overrides are preferred if both exist.
  *
  * PLANNED SURVEY123 INTEGRATION:
  *   Drone & Survey Operations Form  (DRONE_SURVEY_URL — set after form creation)
@@ -23,8 +34,10 @@
 const BASE_WFL =
   "https://services6.arcgis.com/Av3KhOzUMUMSORVt/arcgis/rest/services/ARIMA_1_WFL1/FeatureServer";
 
+// Portal item ID: a3ab90831b764ec4b099a1ff729e0ac3 (MATERIAL RECEIPT FORM)
 const MATERIALS_URL =
   "https://services6.arcgis.com/Av3KhOzUMUMSORVt/arcgis/rest/services/survey123_980a896720d440ad8ed1e246edc90755/FeatureServer/0";
+export const MATERIALS_ITEM_ID = "a3ab90831b764ec4b099a1ff729e0ac3";
 
 // Set this to your Survey123 form URL once the Drone & Survey Operations
 // form has been published in ArcGIS Online.
@@ -131,13 +144,21 @@ export const getGarlandPath = () =>
   queryFeatures(`${BASE_WFL}/${LAYERS.GARLAND_PATH}`, { outFields: "Id,Length,Shape__Length" });
 
 // ─── Materials Receipt (Survey123) ───────────────────────────
-export const getMaterials = () =>
-  queryFeatures(MATERIALS_URL, {
-    outFields: "objectid,date_time_received,material_name,category,unit,quantity_received,received_by,remarks,photos,supplier,CreationDate",
+export async function getMaterials() {
+  const rows = await queryFeatures(MATERIALS_URL, {
+    // field_19/field_15/field_16 are the coded-value fields Survey123 actually populates.
+    // material_name/category/unit are fetched too in case any record used the free-text path.
+    outFields: "objectid,globalid,date_time_received,material_name,field_19,category,field_15,unit,field_16,quantity_received,received_by,remarks,photos,supplier,CreationDate,Creator",
     // orderBy omitted — Survey123 FeatureServer does not support orderByFields;
     // rows are sorted client-side in Inventory.jsx instead.
-    // unit_cost omitted — field does not exist in this feature service schema.
   });
+  return rows.map((r) => ({
+    ...r,
+    material_name: r.material_name || r.field_19 || null,
+    category:      r.category      || r.field_15 || null,
+    unit:          r.unit          || r.field_16 || null,
+  }));
+}
 
 export const getMaterialsCount = () => queryCount(MATERIALS_URL);
 

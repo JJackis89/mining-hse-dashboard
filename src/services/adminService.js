@@ -7,19 +7,58 @@ import {
   doc,
   serverTimestamp,
   onSnapshot,
-  query,
-  orderBy,
   writeBatch,
 } from "firebase/firestore";
 
+// ── Diagnostics ───────────────────────────────────────────────
+
+/**
+ * Creates then immediately deletes a test document in _diagnostics/{uid}.
+ * Returns { ok, ms } on success or { ok: false, error, message } on failure.
+ * Used by the Admin Panel to verify Firestore write access and surface
+ * security-rule blocks that would prevent new user profiles from being written.
+ */
+export async function testFirestoreWrite(uid) {
+  const testRef = doc(db, "_diagnostics", uid);
+  const t0 = Date.now();
+  try {
+    await setDoc(testRef, { uid, testedAt: serverTimestamp() });
+    await deleteDoc(testRef);
+    return { ok: true, ms: Date.now() - t0 };
+  } catch (err) {
+    return { ok: false, error: err.code, message: err.message };
+  }
+}
+
+// ── helpers ───────────────────────────────────────────────────
+function tsMs(val) {
+  if (!val) return 0;
+  if (typeof val.toMillis === "function") return val.toMillis();
+  if (typeof val === "number") return val;
+  return 0;
+}
+
 // ── userRoles (single source of truth for users + roles) ──────
 
-/** Subscribe to all user profiles in real time. Returns unsubscribe fn. */
+/**
+ * Subscribe to all user profiles in real time.
+ *
+ * IMPORTANT: the query intentionally has NO orderBy clause.
+ * Firestore orderBy silently excludes documents that are missing
+ * the ordered field — any user whose createdAt write failed would
+ * never appear.  We fetch the whole collection and sort client-side
+ * so every document is always visible.
+ *
+ * Returns the unsubscribe function.
+ */
 export function subscribeToUsers(onData, onError) {
-  const q = query(collection(db, "userRoles"), orderBy("createdAt", "desc"));
   return onSnapshot(
-    q,
-    (snap) => onData(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
+    collection(db, "userRoles"),
+    (snap) => {
+      const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      rows.sort((a, b) => tsMs(b.createdAt) - tsMs(a.createdAt));
+      onData(rows);
+    },
     onError
   );
 }
@@ -55,9 +94,10 @@ export async function revokePendingInvite(email) {
 // ── Migration: backfill missing profile fields ────────────────
 
 /**
- * For existing userRoles docs that pre-date the profile fields,
- * add default values so they display correctly in the Admin Panel.
- * Returns count of records updated.
+ * For every userRoles document missing any canonical field,
+ * write the defaults so they appear in the Admin Panel and
+ * are ordered correctly by the client-side sort.
+ * Returns the number of documents updated.
  */
 export async function syncLegacyUsers() {
   const snap = await getDocs(collection(db, "userRoles"));
@@ -66,15 +106,17 @@ export async function syncLegacyUsers() {
 
   for (const d of snap.docs) {
     const data = d.data();
-    if (!Object.prototype.hasOwnProperty.call(data, "accountStatus")) {
-      batch.set(doc(db, "userRoles", d.id), {
-        uid: d.id,
-        fullName: data.fullName || "",
-        department: data.department || "",
-        rank: data.rank || "",
-        accountStatus: "Active",
-        lastLogin: data.lastLogin ?? null,
-      }, { merge: true });
+    const has  = (f) => Object.prototype.hasOwnProperty.call(data, f);
+    const patch = {
+      ...(!has("uid")            && { uid: d.id }),
+      ...(!has("fullName")       && { fullName: "" }),
+      ...(!has("department")     && { department: "" }),
+      ...(!has("rank")           && { rank: "" }),
+      ...(!has("accountStatus")  && { accountStatus: "Active" }),
+      ...(!has("createdAt")      && { createdAt: serverTimestamp() }),
+    };
+    if (Object.keys(patch).length > 0) {
+      batch.set(doc(db, "userRoles", d.id), patch, { merge: true });
       count++;
     }
   }
@@ -87,4 +129,33 @@ export async function syncLegacyUsers() {
 export async function getAllUserRoles() {
   const snap = await getDocs(collection(db, "userRoles"));
   return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+// ── Failed Registrations ──────────────────────────────────────
+
+/**
+ * Real-time subscription to accounts that failed to sync during registration.
+ * Written by the client when all userRoles write retries are exhausted.
+ * Returns the unsubscribe function.
+ */
+export function subscribeToFailedRegistrations(onData, onError) {
+  return onSnapshot(collection(db, "failedRegistrations"), (snap) => {
+    onData(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+  }, onError);
+}
+
+/**
+ * Admin-side recovery: creates the userRoles document for a failed registration
+ * using the admin's write credentials, then removes the failedRegistrations entry.
+ */
+export async function approveFailedRegistration(entry, roleOverride = "viewer") {
+  const { id: uid, failedAt: _fa, failReason: _fr, ...profile } = entry;
+  await setDoc(doc(db, "userRoles", uid), {
+    ...profile,
+    role:          roleOverride,
+    accountStatus: profile.accountStatus || "Active",
+    createdAt:     serverTimestamp(),
+    lastLogin:     serverTimestamp(),
+  });
+  await deleteDoc(doc(db, "failedRegistrations", uid));
 }

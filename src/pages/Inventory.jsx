@@ -1,6 +1,9 @@
 import { useEffect, useState, useMemo, useCallback } from "react";
 import { getMaterials, getMaterialAttachments } from "../services/arcgisService";
-import { addIssuance, getIssuances } from "../services/issuanceService";
+import {
+  addIssuance, getIssuances,
+  getIssuanceTotals, generateIssueRef, getOrCreateInventoryItem,
+} from "../services/issuanceService";
 import { exportToCsv } from "../utils/exportCsv";
 import { useUser } from "../context/UserContext";
 
@@ -22,11 +25,6 @@ const PAGE_SIZE = 20;
 function fmt(ts) {
   if (!ts) return "—";
   return new Date(ts).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
-}
-
-function fmtCurrency(val) {
-  if (val == null || val === "") return "—";
-  return Number(val).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function todayISO() {
@@ -140,59 +138,132 @@ function PhotoModal({ record, onClose }) {
 }
 
 // ─── Issuance Modal ───────────────────────────────────────────
-function IssuanceModal({ prefill, user, onClose, onSuccess }) {
+function IssuanceModal({ prefill, allRecords, user, onClose, onSuccess }) {
+  const isPrefilled = !!prefill?.material_name;
+
+  // Unique material list derived from all receipt records
+  const materialOptions = useMemo(() => {
+    const seen = new Map();
+    allRecords.forEach((r) => {
+      if (r.material_name && !seen.has(r.material_name)) {
+        seen.set(r.material_name, {
+          material_name: r.material_name,
+          category:      r.category || "",
+          unit:          r.unit     || "",
+        });
+      }
+    });
+    return [...seen.values()].sort((a, b) => a.material_name.localeCompare(b.material_name));
+  }, [allRecords]);
+
+  const [selectedName, setSelectedName] = useState(prefill?.material_name || "");
+  const [allTotals, setAllTotals]       = useState(null);
+  const [itemMeta, setItemMeta]         = useState(null);
+  const [initLoading, setInitLoading]   = useState(true);
+  const [metaLoading, setMetaLoading]   = useState(false);
   const [form, setForm] = useState({
-    materialName: prefill?.material_name || "",
-    category:     prefill?.category     || "",
-    unit:         prefill?.unit         || "",
-    qtyIssued:    "",
-    issuedTo:     "",
-    purpose:      "",
-    date:         todayISO(),
+    qtyIssued:  "",
+    issuedTo:   "",
+    department: "",
+    purpose:    "",
+    remarks:    "",
+    date:       todayISO(),
   });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError]           = useState("");
 
   useEffect(() => {
-    const handler = (e) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    const h = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
   }, [onClose]);
 
-  const set = (field) => (e) => setForm((f) => ({ ...f, [field]: e.target.value }));
+  // Load all issuance totals once on mount (needed for balance calculation)
+  useEffect(() => {
+    getIssuanceTotals()
+      .then(setAllTotals)
+      .catch(() => setAllTotals({}))
+      .finally(() => setInitLoading(false));
+  }, []);
+
+  // When the selected material changes, load / create its inventory-item metadata
+  useEffect(() => {
+    if (!selectedName) { setItemMeta(null); return; }
+    const mat = materialOptions.find((m) => m.material_name === selectedName)
+      || { category: prefill?.category || "", unit: prefill?.unit || "" };
+    setMetaLoading(true);
+    getOrCreateInventoryItem(selectedName, { category: mat.category, unit: mat.unit })
+      .then(setItemMeta)
+      .catch(() => setItemMeta({ itemCode: "—", warehouseLocation: "Main Store" }))
+      .finally(() => setMetaLoading(false));
+  }, [selectedName]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Stock balance derived values
+  const totalReceived = useMemo(() =>
+    allRecords
+      .filter((r) => r.material_name === selectedName)
+      .reduce((s, r) => s + (Number(r.quantity_received) || 0), 0),
+    [allRecords, selectedName]
+  );
+  const totalIssued = allTotals ? (allTotals[selectedName] || 0) : 0;
+  const balance     = totalReceived - totalIssued;
+
+  const selectedUnit = itemMeta?.unit
+    || materialOptions.find((m) => m.material_name === selectedName)?.unit
+    || prefill?.unit
+    || "";
+
+  const selectedCategory = materialOptions.find((m) => m.material_name === selectedName)?.category
+    || prefill?.category
+    || "";
+
+  const set = (f) => (e) => setForm((prev) => ({ ...prev, [f]: e.target.value }));
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!form.materialName.trim()) { setError("Material name is required."); return; }
-    if (!form.qtyIssued || Number(form.qtyIssued) <= 0) { setError("Quantity must be greater than 0."); return; }
-    if (!form.issuedTo.trim()) { setError("Please specify who the item is issued to."); return; }
+    if (!selectedName) { setError("Please select a material."); return; }
+    const qty = Number(form.qtyIssued);
+    if (!qty || qty <= 0)        { setError("Quantity must be greater than 0."); return; }
+    if (qty > balance)           { setError(`Cannot issue ${qty.toLocaleString()} — only ${balance.toLocaleString()} ${selectedUnit} available.`); return; }
+    if (!form.issuedTo.trim())   { setError("Recipient is required."); return; }
+    if (!form.department.trim()) { setError("Department is required."); return; }
 
     setSubmitting(true);
     setError("");
     try {
+      const issueRefNumber = await generateIssueRef();
       await addIssuance({
-        materialObjectId: prefill?.objectid ?? null,
-        materialName:     form.materialName.trim(),
-        category:         form.category.trim(),
-        unit:             form.unit.trim(),
-        qtyIssued:        Number(form.qtyIssued),
-        issuedTo:         form.issuedTo.trim(),
-        purpose:          form.purpose.trim(),
-        issuedByEmail:    user.email,
-        dateOfIssuance:   form.date,
+        issueRefNumber,
+        materialName:      selectedName,
+        itemCode:          itemMeta?.itemCode          || "",
+        category:          selectedCategory,
+        unit:              selectedUnit,
+        warehouseLocation: itemMeta?.warehouseLocation || "Main Store",
+        qtyIssued:         qty,
+        stockBefore:       balance,
+        stockAfter:        balance - qty,
+        issuedTo:          form.issuedTo.trim(),
+        department:        form.department.trim(),
+        purpose:           form.purpose.trim(),
+        remarks:           form.remarks.trim(),
+        issuedByEmail:     user.email,
+        dateOfIssuance:    form.date,
       });
-      onSuccess(form.materialName.trim());
+      onSuccess(selectedName, issueRefNumber);
     } catch {
       setError("Failed to record issuance. Please try again.");
       setSubmitting(false);
     }
   };
 
-  const isPrefilled = (field) => !!prefill?.[field];
+  const stockState = balance <= 0 ? "zero" : balance <= 10 ? "low" : "ok";
+  const todayPrefix = new Date().toISOString().slice(0, 10).replace(/-/g, "");
 
   return (
     <div className="photo-modal-overlay" onClick={onClose} role="dialog" aria-modal="true" aria-label="Issue item">
       <div className="photo-modal issuance-modal" onClick={(e) => e.stopPropagation()}>
+
+        {/* Header */}
         <div className="photo-modal-header">
           <div>
             <span className="photo-modal-title">Issue Item</span>
@@ -204,108 +275,208 @@ function IssuanceModal({ prefill, user, onClose, onSuccess }) {
         <div className="photo-modal-body">
           {error && <div className="issuance-error" role="alert">{error}</div>}
 
-          <form onSubmit={handleSubmit} className="issuance-form" noValidate>
-            <div className="issuance-form-grid">
-              <div className="issuance-field">
-                <label>Material Name <span className="issuance-required">*</span></label>
-                <input
-                  type="text"
-                  value={form.materialName}
-                  onChange={set("materialName")}
-                  readOnly={isPrefilled("material_name")}
-                  className={isPrefilled("material_name") ? "issuance-input issuance-input--readonly" : "issuance-input"}
-                  placeholder="e.g. Drill Bit Set"
-                  required
-                />
-              </div>
-
-              <div className="issuance-field">
-                <label>Category</label>
-                <input
-                  type="text"
-                  value={form.category}
-                  onChange={set("category")}
-                  readOnly={isPrefilled("category")}
-                  className={isPrefilled("category") ? "issuance-input issuance-input--readonly" : "issuance-input"}
-                  placeholder="e.g. Equipment"
-                />
-              </div>
-
-              <div className="issuance-field">
-                <label>Qty to Issue <span className="issuance-required">*</span></label>
-                <input
-                  type="number"
-                  value={form.qtyIssued}
-                  onChange={set("qtyIssued")}
-                  min="0.01"
-                  step="any"
-                  className="issuance-input"
-                  placeholder="0"
-                  required
-                />
-              </div>
-
-              <div className="issuance-field">
-                <label>Unit</label>
-                <input
-                  type="text"
-                  value={form.unit}
-                  onChange={set("unit")}
-                  readOnly={isPrefilled("unit")}
-                  className={isPrefilled("unit") ? "issuance-input issuance-input--readonly" : "issuance-input"}
-                  placeholder="e.g. pcs"
-                />
-              </div>
-
-              <div className="issuance-field">
-                <label>Issued To <span className="issuance-required">*</span></label>
-                <input
-                  type="text"
-                  value={form.issuedTo}
-                  onChange={set("issuedTo")}
-                  className="issuance-input"
-                  placeholder="Name or department"
-                  required
-                />
-              </div>
-
-              <div className="issuance-field">
-                <label>Date of Issuance <span className="issuance-required">*</span></label>
-                <input
-                  type="date"
-                  value={form.date}
-                  onChange={set("date")}
-                  className="issuance-input"
-                  required
-                />
-              </div>
+          {initLoading ? (
+            <div className="loading-state" style={{ minHeight: 140 }}>
+              <div className="spinner" aria-label="Loading" /><p>Loading inventory data…</p>
             </div>
+          ) : (
+            <form onSubmit={handleSubmit} className="issuance-form" noValidate>
 
-            <div className="issuance-field" style={{ marginTop: 12 }}>
-              <label>Purpose / Notes</label>
-              <textarea
-                value={form.purpose}
-                onChange={set("purpose")}
-                rows={3}
-                className="issuance-textarea"
-                placeholder="Reason for issuance (optional)"
-              />
-            </div>
-
-            <div className="issuance-form-footer">
-              <span className="issuance-by-label">
-                Issuing as: <strong>{user.email}</strong>
-              </span>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button type="button" className="issuance-cancel-btn" onClick={onClose} disabled={submitting}>
-                  Cancel
-                </button>
-                <button type="submit" className="issuance-submit-btn" disabled={submitting}>
-                  {submitting ? "Saving…" : "Record Issuance"}
-                </button>
+              {/* ── Item Selection ─────────────────────── */}
+              <p className="issuance-section-title">Item Selection</p>
+              <div className="issuance-field" style={{ marginBottom: 16 }}>
+                <label>Material <span className="issuance-required">*</span></label>
+                {isPrefilled ? (
+                  <input
+                    className="issuance-input issuance-input--readonly"
+                    value={selectedName}
+                    readOnly
+                    aria-label="Material name"
+                  />
+                ) : (
+                  <select
+                    className="issuance-item-select"
+                    value={selectedName}
+                    onChange={(e) => { setSelectedName(e.target.value); setError(""); }}
+                    required
+                    aria-label="Select material"
+                  >
+                    <option value="">— Select a material —</option>
+                    {materialOptions.map((m) => (
+                      <option key={m.material_name} value={m.material_name}>
+                        {m.material_name}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
-            </div>
-          </form>
+
+              {/* ── Item Details (auto-populated once material is known) ── */}
+              {selectedName && (
+                <>
+                  <p className="issuance-section-title">Item Details</p>
+
+                  {metaLoading ? (
+                    <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 14 }}>
+                      Loading item details…
+                    </div>
+                  ) : (
+                    <div className="issuance-meta-grid">
+                      <div className="issuance-meta-item">
+                        <span className="issuance-meta-label">Item Code / Asset No.</span>
+                        <span className="issuance-meta-value mono">{itemMeta?.itemCode || "—"}</span>
+                      </div>
+                      <div className="issuance-meta-item">
+                        <span className="issuance-meta-label">Category</span>
+                        <span className="issuance-meta-value">{selectedCategory || "—"}</span>
+                      </div>
+                      <div className="issuance-meta-item">
+                        <span className="issuance-meta-label">Unit of Measure</span>
+                        <span className="issuance-meta-value">{selectedUnit || "—"}</span>
+                      </div>
+                      <div className="issuance-meta-item">
+                        <span className="issuance-meta-label">Warehouse / Store</span>
+                        <span className="issuance-meta-value">{itemMeta?.warehouseLocation || "Main Store"}</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── Stock Balance Card ──────────────── */}
+                  <div className={`issuance-stock-card issuance-stock-card--${stockState}`}>
+                    <div style={{ flex: 1 }}>
+                      <span className="issuance-stock-label">Available Stock</span>
+                      <div>
+                        <span className={`issuance-stock-number issuance-stock-number--${stockState}`}>
+                          {balance.toLocaleString()}
+                        </span>
+                        {selectedUnit && (
+                          <span className="issuance-stock-unit">{selectedUnit}</span>
+                        )}
+                      </div>
+                      <span className="issuance-stock-detail">
+                        Received: {totalReceived.toLocaleString()} · Issued: {totalIssued.toLocaleString()}
+                      </span>
+                    </div>
+                    {stockState === "zero" && (
+                      <span className="issuance-stock-badge issuance-stock-badge--zero">No stock</span>
+                    )}
+                    {stockState === "low" && (
+                      <span className="issuance-stock-badge issuance-stock-badge--low">Low stock</span>
+                    )}
+                  </div>
+
+                  {/* ── Transaction Details ─────────────── */}
+                  <div className="issuance-section-divider" />
+                  <p className="issuance-section-title">Transaction Details</p>
+
+                  <div className="issuance-form-grid">
+                    <div className="issuance-field">
+                      <label>Qty to Issue <span className="issuance-required">*</span></label>
+                      <input
+                        type="number"
+                        value={form.qtyIssued}
+                        onChange={set("qtyIssued")}
+                        min="0.01"
+                        max={balance > 0 ? balance : undefined}
+                        step="any"
+                        className="issuance-input"
+                        placeholder="0"
+                        required
+                        disabled={balance <= 0}
+                        aria-describedby="qty-hint"
+                      />
+                      {balance > 0 && (
+                        <span id="qty-hint" style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                          Max: {balance.toLocaleString()} {selectedUnit}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="issuance-field">
+                      <label>Recipient <span className="issuance-required">*</span></label>
+                      <input
+                        type="text"
+                        value={form.issuedTo}
+                        onChange={set("issuedTo")}
+                        className="issuance-input"
+                        placeholder="Name or employee ID"
+                        required
+                      />
+                    </div>
+
+                    <div className="issuance-field">
+                      <label>Department <span className="issuance-required">*</span></label>
+                      <input
+                        type="text"
+                        value={form.department}
+                        onChange={set("department")}
+                        className="issuance-input"
+                        placeholder="e.g. Operations"
+                        required
+                      />
+                    </div>
+
+                    <div className="issuance-field">
+                      <label>Date of Issuance <span className="issuance-required">*</span></label>
+                      <input
+                        type="date"
+                        value={form.date}
+                        onChange={set("date")}
+                        className="issuance-input"
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <div className="issuance-field" style={{ marginTop: 12 }}>
+                    <label>Purpose</label>
+                    <textarea
+                      value={form.purpose}
+                      onChange={set("purpose")}
+                      rows={2}
+                      className="issuance-textarea"
+                      placeholder="Reason for issuance (optional)"
+                    />
+                  </div>
+
+                  <div className="issuance-field" style={{ marginTop: 10 }}>
+                    <label>Remarks</label>
+                    <textarea
+                      value={form.remarks}
+                      onChange={set("remarks")}
+                      rows={2}
+                      className="issuance-textarea"
+                      placeholder="Additional notes (optional)"
+                    />
+                  </div>
+                </>
+              )}
+
+              {/* ── Footer ─────────────────────────────── */}
+              <div className="issuance-form-footer">
+                <div className="issuance-footer-meta">
+                  <span className="issuance-ref-preview">
+                    Ref: ISS-{todayPrefix}-auto
+                  </span>
+                  <span className="issuance-by-label">
+                    Issued by: <strong>{user.email}</strong>
+                  </span>
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button type="button" className="issuance-cancel-btn" onClick={onClose} disabled={submitting}>
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="issuance-submit-btn"
+                    disabled={submitting || !selectedName || balance <= 0}
+                  >
+                    {submitting ? "Saving…" : "Record Issuance"}
+                  </button>
+                </div>
+              </div>
+            </form>
+          )}
         </div>
       </div>
     </div>
@@ -314,9 +485,9 @@ function IssuanceModal({ prefill, user, onClose, onSuccess }) {
 
 // ─── Issuances Tab Content ────────────────────────────────────
 function IssuancesPanel({ refresh }) {
-  const [issuances, setIssuances]     = useState([]);
-  const [loading, setLoading]         = useState(true);
-  const [error, setError]             = useState(null);
+  const [issuances, setIssuances] = useState([]);
+  const [loading, setLoading]     = useState(true);
+  const [error, setError]         = useState(null);
 
   useEffect(() => {
     setLoading(true);
@@ -360,12 +531,16 @@ function IssuancesPanel({ refresh }) {
         <table className="data-table">
           <thead>
             <tr>
+              <th scope="col">Ref No.</th>
               <th scope="col">Date</th>
               <th scope="col">Material</th>
+              <th scope="col">Code</th>
               <th scope="col">Category</th>
               <th scope="col">Qty Issued</th>
               <th scope="col">Unit</th>
+              <th scope="col">Stock After</th>
               <th scope="col">Issued To</th>
+              <th scope="col">Department</th>
               <th scope="col">Purpose</th>
               <th scope="col">Issued By</th>
             </tr>
@@ -373,18 +548,38 @@ function IssuancesPanel({ refresh }) {
           <tbody>
             {issuances.map((r) => (
               <tr key={r.id}>
+                <td data-label="Ref No.">
+                  {r.issueRefNumber
+                    ? <span className="issuance-ref-chip">{r.issueRefNumber}</span>
+                    : <span style={{ color: "var(--text-muted)" }}>—</span>}
+                </td>
                 <td className="mono" data-label="Date">{r.dateOfIssuance || "—"}</td>
                 <td className="bold" data-label="Material">{r.materialName || "—"}</td>
+                <td className="mono" data-label="Code" style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                  {r.itemCode || "—"}
+                </td>
                 <td data-label="Category">
                   {r.category
                     ? <span className="inv-category-badge">{r.category}</span>
                     : "—"}
                 </td>
-                <td className="mono" data-label="Qty">{r.qtyIssued ?? "—"}</td>
+                <td className="mono" data-label="Qty Issued">{r.qtyIssued ?? "—"}</td>
                 <td data-label="Unit">{r.unit || "—"}</td>
+                <td data-label="Stock After">
+                  {r.stockAfter != null
+                    ? <span className={`issuance-balance-chip ${r.stockAfter <= 0 ? "issuance-balance-chip--zero" : r.stockAfter <= 10 ? "issuance-balance-chip--low" : ""}`}>
+                        {r.stockAfter.toLocaleString()}
+                      </span>
+                    : "—"}
+                </td>
                 <td data-label="Issued To">{r.issuedTo || "—"}</td>
-                <td data-label="Purpose" style={{ maxWidth: 200, whiteSpace: "normal", lineHeight: 1.4 }}>{r.purpose || "—"}</td>
-                <td data-label="Issued By" style={{ fontSize: 12, color: "var(--text-muted)" }}>{r.issuedByEmail || "—"}</td>
+                <td data-label="Department">{r.department || "—"}</td>
+                <td data-label="Purpose" style={{ maxWidth: 180, whiteSpace: "normal", lineHeight: 1.4 }}>
+                  {r.purpose || r.remarks || "—"}
+                </td>
+                <td data-label="Issued By" style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                  {r.issuedByEmail || "—"}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -410,14 +605,14 @@ function Inventory() {
   const [photoRecord, setPhotoRecord] = useState(null);
   const [page, setPage]               = useState(1);
 
-  const [activeTab, setActiveTab]             = useState("receipts");
-  const [issuanceTarget, setIssuanceTarget]   = useState(null);
-  const [issuanceSuccess, setIssuanceSuccess] = useState("");
+  const [activeTab, setActiveTab]               = useState("receipts");
+  const [issuanceTarget, setIssuanceTarget]     = useState(null);
+  const [issuanceSuccess, setIssuanceSuccess]   = useState("");
   const [issuancesRefresh, setIssuancesRefresh] = useState(0);
 
   useEffect(() => {
     if (!issuanceSuccess) return;
-    const t = setTimeout(() => setIssuanceSuccess(""), 4000);
+    const t = setTimeout(() => setIssuanceSuccess(""), 5000);
     return () => clearTimeout(t);
   }, [issuanceSuccess]);
 
@@ -469,9 +664,9 @@ function Inventory() {
 
   const closeModal = useCallback(() => setPhotoRecord(null), []);
 
-  const handleIssuanceSuccess = useCallback((materialName) => {
+  const handleIssuanceSuccess = useCallback((materialName, refNumber) => {
     setIssuanceTarget(null);
-    setIssuanceSuccess(`Issuance of "${materialName}" recorded successfully.`);
+    setIssuanceSuccess(`${refNumber} — "${materialName}" issued successfully.`);
     setIssuancesRefresh((n) => n + 1);
   }, []);
 
@@ -699,6 +894,7 @@ function Inventory() {
       {issuanceTarget !== null && (
         <IssuanceModal
           prefill={issuanceTarget}
+          allRecords={records}
           user={user}
           onClose={() => setIssuanceTarget(null)}
           onSuccess={handleIssuanceSuccess}
