@@ -29,12 +29,21 @@ export async function getIssuanceTotals() {
 }
 
 // ─── Inventory Item Metadata ─────────────────────────────────
-// Retrieves or bootstraps a per-material record storing itemCode + warehouseLocation.
+// Module-level Map cache — avoids repeated Firestore reads when the user
+// switches between materials in the issuance modal.
+const _itemCache = new Map();
+
 export async function getOrCreateInventoryItem(materialName, defaults = {}) {
-  const key    = materialName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+  const key = materialName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+  if (_itemCache.has(key)) return _itemCache.get(key);
+
   const docRef = doc(db, INVENTORY_COL, key);
   const snap   = await getDoc(docRef);
-  if (snap.exists()) return { id: snap.id, ...snap.data() };
+  if (snap.exists()) {
+    const item = { id: snap.id, ...snap.data() };
+    _itemCache.set(key, item);
+    return item;
+  }
 
   const allSnap  = await getDocs(collection(db, INVENTORY_COL));
   const itemCode = `ITM-${String(allSnap.size + 1).padStart(4, "0")}`;
@@ -48,7 +57,9 @@ export async function getOrCreateInventoryItem(materialName, defaults = {}) {
     updatedAt:         serverTimestamp(),
   };
   await setDoc(docRef, payload);
-  return { id: key, ...payload };
+  const item = { id: key, ...payload };
+  _itemCache.set(key, item);
+  return item;
 }
 
 // ─── Issue Reference Number ──────────────────────────────────

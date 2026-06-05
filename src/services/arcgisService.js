@@ -144,20 +144,32 @@ export const getGarlandPath = () =>
   queryFeatures(`${BASE_WFL}/${LAYERS.GARLAND_PATH}`, { outFields: "Id,Length,Shape__Length" });
 
 // ─── Materials Receipt (Survey123) ───────────────────────────
+// Module-level session cache — avoids re-fetching the full ArcGIS layer
+// on every page visit or tab switch.  5-minute TTL keeps data reasonably fresh.
+const _matCache = { data: null, at: 0 };
+const MAT_TTL   = 5 * 60 * 1000;
+
 export async function getMaterials() {
+  if (_matCache.data && Date.now() - _matCache.at < MAT_TTL) {
+    return _matCache.data;
+  }
   const rows = await queryFeatures(MATERIALS_URL, {
-    // field_19/field_15/field_16 are the coded-value fields Survey123 actually populates.
-    // material_name/category/unit are fetched too in case any record used the free-text path.
     outFields: "objectid,globalid,date_time_received,material_name,field_19,category,field_15,unit,field_16,quantity_received,received_by,remarks,photos,supplier,CreationDate,Creator",
-    // orderBy omitted — Survey123 FeatureServer does not support orderByFields;
-    // rows are sorted client-side in Inventory.jsx instead.
   });
-  return rows.map((r) => ({
+  const result = rows.map((r) => ({
     ...r,
     material_name: r.material_name || r.field_19 || null,
     category:      r.category      || r.field_15 || null,
     unit:          r.unit          || r.field_16 || null,
   }));
+  _matCache.data = result;
+  _matCache.at   = Date.now();
+  return result;
+}
+
+// Invalidate the cache so the next getMaterials() call fetches fresh data.
+export function invalidateMaterialsCache() {
+  _matCache.data = null;
 }
 
 export const getMaterialsCount = () => queryCount(MATERIALS_URL);

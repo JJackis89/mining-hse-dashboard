@@ -138,7 +138,9 @@ function PhotoModal({ record, onClose }) {
 }
 
 // ─── Issuance Modal ───────────────────────────────────────────
-function IssuanceModal({ prefill, allRecords, user, onClose, onSuccess }) {
+// allTotals is passed in from the parent — fetched once at page level,
+// never re-fetched on every modal open.
+function IssuanceModal({ prefill, allRecords, allTotals, user, onClose, onSuccess }) {
   const isPrefilled = !!prefill?.material_name;
 
   // Unique material list derived from all receipt records
@@ -157,9 +159,7 @@ function IssuanceModal({ prefill, allRecords, user, onClose, onSuccess }) {
   }, [allRecords]);
 
   const [selectedName, setSelectedName] = useState(prefill?.material_name || "");
-  const [allTotals, setAllTotals]       = useState(null);
   const [itemMeta, setItemMeta]         = useState(null);
-  const [initLoading, setInitLoading]   = useState(true);
   const [metaLoading, setMetaLoading]   = useState(false);
   const [form, setForm] = useState({
     qtyIssued:  "",
@@ -177,14 +177,6 @@ function IssuanceModal({ prefill, allRecords, user, onClose, onSuccess }) {
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   }, [onClose]);
-
-  // Load all issuance totals once on mount (needed for balance calculation)
-  useEffect(() => {
-    getIssuanceTotals()
-      .then(setAllTotals)
-      .catch(() => setAllTotals({}))
-      .finally(() => setInitLoading(false));
-  }, []);
 
   // When the selected material changes, load / create its inventory-item metadata
   useEffect(() => {
@@ -275,12 +267,7 @@ function IssuanceModal({ prefill, allRecords, user, onClose, onSuccess }) {
         <div className="photo-modal-body">
           {error && <div className="issuance-error" role="alert">{error}</div>}
 
-          {initLoading ? (
-            <div className="loading-state" style={{ minHeight: 140 }}>
-              <div className="spinner" aria-label="Loading" /><p>Loading inventory data…</p>
-            </div>
-          ) : (
-            <form onSubmit={handleSubmit} className="issuance-form" noValidate>
+          <form onSubmit={handleSubmit} className="issuance-form" noValidate>
 
               {/* ── Item Selection ─────────────────────── */}
               <p className="issuance-section-title">Item Selection</p>
@@ -476,7 +463,6 @@ function IssuanceModal({ prefill, allRecords, user, onClose, onSuccess }) {
                 </div>
               </div>
             </form>
-          )}
         </div>
       </div>
     </div>
@@ -598,6 +584,7 @@ function Inventory() {
   const canIssue = ISSUANCE_ROLES.includes(user?.role);
 
   const [records, setRecords]         = useState([]);
+  const [allTotals, setAllTotals]     = useState({});
   const [loading, setLoading]         = useState(true);
   const [error, setError]             = useState(null);
   const [search, setSearch]           = useState("");
@@ -618,15 +605,17 @@ function Inventory() {
 
   useEffect(() => {
     let cancelled = false;
-    getMaterials()
-      .then((rows) => {
-        if (!cancelled) setRecords(
-          rows
-            .map((r) => ({ ...r }))
-            .sort((a, b) => (b.date_time_received || 0) - (a.date_time_received || 0))
-        );
-      })
-      .catch((err) => { if (!cancelled) setError(err.message); })
+    // Fetch ArcGIS materials and Firestore issuance totals in parallel.
+    // Both results are needed before the Issue Item modal can render correctly.
+    Promise.all([
+      getMaterials(),
+      getIssuanceTotals(),
+    ]).then(([rows, totals]) => {
+      if (!cancelled) {
+        setRecords(rows.sort((a, b) => (b.date_time_received || 0) - (a.date_time_received || 0)));
+        setAllTotals(totals);
+      }
+    }).catch((err) => { if (!cancelled) setError(err.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, []);
@@ -668,6 +657,8 @@ function Inventory() {
     setIssuanceTarget(null);
     setIssuanceSuccess(`${refNumber} — "${materialName}" issued successfully.`);
     setIssuancesRefresh((n) => n + 1);
+    // Refresh totals so the balance is accurate if the modal is reopened
+    getIssuanceTotals().then(setAllTotals).catch(() => {});
   }, []);
 
   if (loading) {
@@ -895,6 +886,7 @@ function Inventory() {
         <IssuanceModal
           prefill={issuanceTarget}
           allRecords={records}
+          allTotals={allTotals}
           user={user}
           onClose={() => setIssuanceTarget(null)}
           onSuccess={handleIssuanceSuccess}
