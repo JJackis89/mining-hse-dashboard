@@ -3,20 +3,23 @@ import arimaLogo from "../assets/arima-logo.png";
 import { useUser } from "../context/UserContext";
 import { NAV_ITEMS, canAccess } from "../utils/permissions";
 
-function Sidebar({ collapsed, onToggle }) {
+function Sidebar({ collapsed, onToggle, isOpen, onClose }) {
   const user = useUser();
   const role = user?.role ?? "viewer";
-
   const visibleItems = NAV_ITEMS.filter((item) => canAccess(role, item.path));
+
+  // On mobile overlay, always show labels regardless of desktop collapsed state
+  const showLabels = isOpen || !collapsed;
 
   return (
     <aside
-      className={`sidebar ${collapsed ? "sidebar--collapsed" : ""}`}
+      id="main-sidebar"
+      className={`sidebar ${collapsed ? "sidebar--collapsed" : ""} ${isOpen ? "sidebar--mobile-open" : ""}`}
       aria-label="Main navigation"
     >
       <div className="sidebar-brand">
         <img src={arimaLogo} alt="ARIMA Resources" className="sidebar-brand-logo" />
-        {!collapsed && (
+        {showLabels && (
           <div className="sidebar-brand-text">
             <span className="brand-title">ARIMA RESOURCES</span>
             <span className="brand-sub">Operations Platform</span>
@@ -33,11 +36,12 @@ function Sidebar({ collapsed, onToggle }) {
             className={({ isActive }) =>
               `sidebar-link ${isActive ? "sidebar-link--active" : ""} ${item.path === "/admin" ? "sidebar-link--admin" : ""}`
             }
-            title={collapsed ? item.label : undefined}
+            title={!showLabels ? item.label : undefined}
             aria-label={item.label}
+            onClick={onClose}
           >
             <span className="sidebar-link-icon" aria-hidden="true">{item.icon}</span>
-            {!collapsed && (
+            {showLabels && (
               <span className="sidebar-link-label">{item.label}</span>
             )}
           </NavLink>

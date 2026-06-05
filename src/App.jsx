@@ -72,6 +72,7 @@ function App() {
   const [loginLoading, setLoginLoading] = useState(false);
   const [isSignUp, setIsSignUp]         = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   useEffect(() => {
     // Support comma-separated list of admin emails
@@ -295,13 +296,28 @@ function App() {
   return (
     <UserContext.Provider value={user}>
       <div className={`app-layout ${sidebarCollapsed ? "app-layout--collapsed" : ""}`}>
+        {mobileSidebarOpen && (
+          <div
+            className="sidebar-backdrop sidebar-backdrop--visible"
+            onClick={() => setMobileSidebarOpen(false)}
+            aria-hidden="true"
+          />
+        )}
+
         <Sidebar
           collapsed={sidebarCollapsed}
           onToggle={() => setSidebarCollapsed((c) => !c)}
+          isOpen={mobileSidebarOpen}
+          onClose={() => setMobileSidebarOpen(false)}
         />
 
         <div className="app-main">
-          <Header user={user} onLogout={handleLogout} />
+          <Header
+            user={user}
+            onLogout={handleLogout}
+            onMenuToggle={() => setMobileSidebarOpen((v) => !v)}
+            menuOpen={mobileSidebarOpen}
+          />
 
           <main className="app-content">
             <Suspense fallback={<PageLoader />}>

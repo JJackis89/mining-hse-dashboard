@@ -7,7 +7,7 @@ const PAGE_TITLES = {
   "/map":        "Map Viewer",
   "/inventory":  "Inventory",
   "/operations": "Drone & Survey Operations",
-  "/schedule":   "Work Schedule & Progress Monitoring",
+  "/schedule":   "Work Schedule",
   "/admin":      "System Administration",
 };
 
@@ -18,14 +18,25 @@ const ROLE_BADGE_STYLE = {
   viewer:      { background: "rgba(139,150,166,0.12)", color: "var(--text-muted)" },
 };
 
-function Header({ user, onLogout, onZoomTo }) {
+function Header({ user, onLogout, onZoomTo, onMenuToggle, menuOpen }) {
   const location = useLocation();
   const title = PAGE_TITLES[location.pathname] || "ARIMA Resources";
   const roleStyle = ROLE_BADGE_STYLE[user.role] ?? ROLE_BADGE_STYLE.viewer;
 
   return (
     <header className="app-header">
-      <div className="header-left">
+      <div className="header-left" style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+        <button
+          className={`hamburger-btn${menuOpen ? " hamburger-btn--open" : ""}`}
+          onClick={onMenuToggle}
+          aria-label={menuOpen ? "Close navigation menu" : "Open navigation menu"}
+          aria-expanded={menuOpen}
+          aria-controls="main-sidebar"
+        >
+          <span />
+          <span />
+          <span />
+        </button>
         <h2 className="header-page-title">{title}</h2>
       </div>
 

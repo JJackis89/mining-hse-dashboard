@@ -357,7 +357,7 @@ function IssuancesPanel({ refresh }) {
 
   return (
     <>
-      <div className="table-scroll" style={{ maxHeight: 520 }}>
+      <div className="table-scroll table-mobile-cards" style={{ maxHeight: 520 }}>
         <table className="data-table">
           <thead>
             <tr>
@@ -374,18 +374,18 @@ function IssuancesPanel({ refresh }) {
           <tbody>
             {issuances.map((r) => (
               <tr key={r.id}>
-                <td className="mono">{r.dateOfIssuance || "—"}</td>
-                <td className="bold">{r.materialName || "—"}</td>
-                <td>
+                <td className="mono" data-label="Date">{r.dateOfIssuance || "—"}</td>
+                <td className="bold" data-label="Material">{r.materialName || "—"}</td>
+                <td data-label="Category">
                   {r.category
                     ? <span className="inv-category-badge">{r.category}</span>
                     : "—"}
                 </td>
-                <td className="mono">{r.qtyIssued ?? "—"}</td>
-                <td>{r.unit || "—"}</td>
-                <td>{r.issuedTo || "—"}</td>
-                <td style={{ maxWidth: 200, whiteSpace: "normal", lineHeight: 1.4 }}>{r.purpose || "—"}</td>
-                <td style={{ fontSize: 12, color: "var(--text-muted)" }}>{r.issuedByEmail || "—"}</td>
+                <td className="mono" data-label="Qty">{r.qtyIssued ?? "—"}</td>
+                <td data-label="Unit">{r.unit || "—"}</td>
+                <td data-label="Issued To">{r.issuedTo || "—"}</td>
+                <td data-label="Purpose" style={{ maxWidth: 200, whiteSpace: "normal", lineHeight: 1.4 }}>{r.purpose || "—"}</td>
+                <td data-label="Issued By" style={{ fontSize: 12, color: "var(--text-muted)" }}>{r.issuedByEmail || "—"}</td>
               </tr>
             ))}
           </tbody>
@@ -616,7 +616,7 @@ function Inventory() {
               </div>
             </div>
 
-            <div className="table-scroll" style={{ maxHeight: 520 }}>
+            <div className="table-scroll table-mobile-cards" style={{ maxHeight: 520 }}>
               {filtered.length === 0 ? (
                 <div className="empty-state">
                   <p>No records match your filters.</p>
@@ -642,28 +642,28 @@ function Inventory() {
                   <tbody>
                     {pageItems.map((r) => (
                       <tr key={r.objectid}>
-                        <td className="mono">{fmt(r.date_time_received)}</td>
-                        <td className="bold">{r.material_name || "—"}</td>
-                        <td>
+                        <td className="mono" data-label="Date">{fmt(r.date_time_received)}</td>
+                        <td className="bold" data-label="Material">{r.material_name || "—"}</td>
+                        <td data-label="Category">
                           {r.category
                             ? <span className="inv-category-badge">{r.category}</span>
                             : "—"}
                         </td>
-                        <td className="mono">{r.quantity_received ?? "—"}</td>
-                        <td>{r.unit || "—"}</td>
-                        <td className="mono">{fmtCurrency(r.unit_cost)}</td>
-                        <td className="mono">{r._total != null ? fmtCurrency(r._total) : "—"}</td>
-                        <td>{r.received_by || "—"}</td>
-                        <td style={{ maxWidth: 200, whiteSpace: "normal", lineHeight: 1.4 }}>
+                        <td className="mono" data-label="Qty">{r.quantity_received ?? "—"}</td>
+                        <td data-label="Unit">{r.unit || "—"}</td>
+                        <td className="mono" data-label="Unit Cost">{fmtCurrency(r.unit_cost)}</td>
+                        <td className="mono" data-label="Total">{r._total != null ? fmtCurrency(r._total) : "—"}</td>
+                        <td data-label="Received By">{r.received_by || "—"}</td>
+                        <td data-label="Notes" style={{ maxWidth: 200, whiteSpace: "normal", lineHeight: 1.4 }}>
                           {r.remarks || "—"}
                         </td>
-                        <td>
+                        <td data-label="">
                           <button className="photo-view-btn" onClick={() => setPhotoRecord(r)} aria-label={`View photos for ${r.material_name || "receipt"}`}>
                             View
                           </button>
                         </td>
                         {canIssue && (
-                          <td>
+                          <td data-label="">
                             <button
                               className="issue-row-btn"
                               onClick={() => setIssuanceTarget(r)}
