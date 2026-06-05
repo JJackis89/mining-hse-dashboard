@@ -21,10 +21,6 @@ function fmt(ts) {
   return new Date(ts).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 }
 
-function fmtCurrency(val) {
-  if (val == null) return "—";
-  return Number(val).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
 
 function Pagination({ page, totalPages, onChange }) {
   if (totalPages <= 1) return null;
@@ -107,9 +103,9 @@ function Dashboard() {
 
   // ── Aggregates ────────────────────────────────────────────
   const totalReceipts = materials.length;
-  const totalValue    = materials.reduce((s, r) => s + (r._total || 0), 0);
   const totalQty      = materials.reduce((s, r) => s + (r.quantity_received || 0), 0);
   const matCategories = new Set(materials.map((r) => r.category).filter(Boolean)).size;
+  const matSuppliers  = new Set(materials.map((r) => r.supplier).filter(Boolean)).size;
 
   const sorted = [...materials].sort((a, b) => (b.date_time_received || 0) - (a.date_time_received || 0));
   const totalPages   = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
@@ -137,15 +133,6 @@ function Dashboard() {
   materials.forEach((r) => { const c = r.category || "Other"; catCounts[c] = (catCounts[c] || 0) + 1; });
   const catData = Object.entries(catCounts).map(([name, value]) => ({ name, value }));
 
-  // Stock value by category
-  const catValueMap = {};
-  materials.forEach((r) => {
-    const c = r.category || "Other";
-    catValueMap[c] = (catValueMap[c] || 0) + (r._total || 0);
-  });
-  const catValueData = Object.entries(catValueMap)
-    .map(([name, value]) => ({ name, value: parseFloat(value.toFixed(2)) }))
-    .sort((a, b) => b.value - a.value);
 
   return (
     <div className="page-dashboard">
@@ -153,10 +140,10 @@ function Dashboard() {
       {/* ══ KPI Cards ══════════════════════════════════════ */}
       <section className="kpi-grid" aria-label="Key performance indicators">
         {[
-          { title: "Total Receipts",    value: totalReceipts,             sub: "Inventory entries",       color: "#B8881A" },
-          { title: "Categories",        value: matCategories,             sub: "Distinct material types", color: "#1A74BC" },
-          { title: "Total Qty",         value: totalQty.toLocaleString(), sub: "Units received",          color: "#1E9E52" },
-          { title: "Total Stock Value", value: fmtCurrency(totalValue),   sub: "All receipts combined",   color: "#D4820A" },
+          { title: "Total Receipts", value: totalReceipts,             sub: "Inventory entries",       color: "#B8881A" },
+          { title: "Categories",     value: matCategories,             sub: "Distinct material types", color: "#1A74BC" },
+          { title: "Total Qty",      value: totalQty.toLocaleString(), sub: "Units received",          color: "#1E9E52" },
+          { title: "Suppliers",      value: matSuppliers,              sub: "Unique suppliers",        color: "#7D3C98" },
         ].map((kpi, i) => (
           <div className="kpi-card" key={i}>
             <div className="kpi-icon" style={{ background: kpi.color + "18", color: kpi.color }} aria-hidden="true" />
@@ -207,27 +194,6 @@ function Dashboard() {
           </div>
         </section>
 
-        <section className="panel chart-panel" aria-label="Stock value by category">
-          <div className="panel-header"><h3>Stock Value by Category</h3></div>
-          <div className="chart-wrap">
-            {catValueData.length === 0 ? (
-              <div className="empty-state" style={{ minHeight: 220 }}><p>No data yet.</p></div>
-            ) : (
-              <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={catValueData} layout="vertical" margin={{ top: 4, right: 20, bottom: 4, left: 80 }}>
-                  <XAxis type="number" tick={{ fill: "#8B96A6", fontSize: 11 }} />
-                  <YAxis type="category" dataKey="name" tick={{ fill: "#4D5A6E", fontSize: 11 }} width={76} />
-                  <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v) => fmtCurrency(v)} />
-                  <Bar dataKey="value" radius={[0, 3, 3, 0]}>
-                    {catValueData.map((_, idx) => (
-                      <Cell key={idx} fill={CAT_COLORS[idx % CAT_COLORS.length]} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-          </div>
-        </section>
 
       </div>
 
@@ -253,8 +219,7 @@ function Dashboard() {
                     <th scope="col">Category</th>
                     <th scope="col">Qty</th>
                     <th scope="col">Unit</th>
-                    <th scope="col">Unit Cost</th>
-                    <th scope="col">Total Value</th>
+                    <th scope="col">Supplier</th>
                     <th scope="col">Received By</th>
                   </tr>
                 </thead>
@@ -266,8 +231,7 @@ function Dashboard() {
                       <td>{r.category || "—"}</td>
                       <td className="mono">{r.quantity_received ?? "—"}</td>
                       <td>{r.unit || "—"}</td>
-                      <td className="mono">{fmtCurrency(r.unit_cost)}</td>
-                      <td className="mono">{r._total != null ? fmtCurrency(r._total) : "—"}</td>
+                      <td>{r.supplier || "—"}</td>
                       <td>{r.received_by || "—"}</td>
                     </tr>
                   ))}

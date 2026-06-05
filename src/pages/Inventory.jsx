@@ -12,8 +12,7 @@ const CSV_COLUMNS = [
   { key: "category",           label: "Category" },
   { key: "quantity_received",  label: "Qty" },
   { key: "unit",               label: "Unit" },
-  { key: "unit_cost",          label: "Unit Cost" },
-  { key: "_total",             label: "Total Value" },
+  { key: "supplier",           label: "Supplier" },
   { key: "received_by",        label: "Received By" },
   { key: "remarks",            label: "Remarks" },
 ];
@@ -428,12 +427,7 @@ function Inventory() {
       .then((rows) => {
         if (!cancelled) setRecords(
           rows
-            .map((r) => ({
-              ...r,
-              _total: r.quantity_received != null && r.unit_cost != null
-                ? r.quantity_received * r.unit_cost
-                : null,
-            }))
+            .map((r) => ({ ...r }))
             .sort((a, b) => (b.date_time_received || 0) - (a.date_time_received || 0))
         );
       })
@@ -466,7 +460,7 @@ function Inventory() {
     count:      filtered.length,
     categories: new Set(filtered.map((r) => r.category).filter(Boolean)).size,
     totalQty:   filtered.reduce((s, r) => s + (r.quantity_received || 0), 0),
-    totalValue: filtered.reduce((s, r) => s + (r._total || 0), 0),
+    suppliers:  new Set(filtered.map((r) => r.supplier).filter(Boolean)).size,
   }), [filtered]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
@@ -530,11 +524,11 @@ function Inventory() {
           </div>
         </div>
         <div className="kpi-card">
-          <div className="kpi-icon" style={{ background: "rgba(212,130,10,0.1)", color: "#D4820A" }} aria-hidden="true" />
+          <div className="kpi-icon" style={{ background: "rgba(125,60,152,0.1)", color: "#7D3C98" }} aria-hidden="true" />
           <div className="kpi-data">
-            <span className="kpi-value">{fmtCurrency(totals.totalValue)}</span>
-            <span className="kpi-title">Total Value</span>
-            <span className="kpi-trend">Cost of filtered items</span>
+            <span className="kpi-value">{totals.suppliers}</span>
+            <span className="kpi-title">Suppliers</span>
+            <span className="kpi-trend">Unique suppliers</span>
           </div>
         </div>
       </section>
@@ -635,8 +629,7 @@ function Inventory() {
                       <th scope="col">Category</th>
                       <th scope="col">Qty</th>
                       <th scope="col">Unit</th>
-                      <th scope="col">Unit Cost</th>
-                      <th scope="col">Total Value</th>
+                      <th scope="col">Supplier</th>
                       <th scope="col">Received By</th>
                       <th scope="col">Remarks</th>
                       <th scope="col">Photos</th>
@@ -655,8 +648,7 @@ function Inventory() {
                         </td>
                         <td className="mono" data-label="Qty">{r.quantity_received ?? "—"}</td>
                         <td data-label="Unit">{r.unit || "—"}</td>
-                        <td className="mono" data-label="Unit Cost">{fmtCurrency(r.unit_cost)}</td>
-                        <td className="mono" data-label="Total">{r._total != null ? fmtCurrency(r._total) : "—"}</td>
+                        <td data-label="Supplier">{r.supplier || "—"}</td>
                         <td data-label="Received By">{r.received_by || "—"}</td>
                         <td data-label="Notes" style={{ maxWidth: 200, whiteSpace: "normal", lineHeight: 1.4 }}>
                           {r.remarks || "—"}

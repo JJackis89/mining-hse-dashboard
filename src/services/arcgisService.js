@@ -133,9 +133,10 @@ export const getGarlandPath = () =>
 // ─── Materials Receipt (Survey123) ───────────────────────────
 export const getMaterials = () =>
   queryFeatures(MATERIALS_URL, {
-    outFields: "objectid,date_time_received,material_name,category,unit,unit_cost,quantity_received,received_by,remarks,photos,CreationDate",
+    outFields: "objectid,date_time_received,material_name,category,unit,quantity_received,received_by,remarks,photos,supplier,CreationDate",
     // orderBy omitted — Survey123 FeatureServer does not support orderByFields;
     // rows are sorted client-side in Inventory.jsx instead.
+    // unit_cost omitted — field does not exist in this feature service schema.
   });
 
 export const getMaterialsCount = () => queryCount(MATERIALS_URL);
