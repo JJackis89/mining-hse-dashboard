@@ -583,10 +583,11 @@ function Inventory() {
   const user     = useUser();
   const canIssue = ISSUANCE_ROLES.includes(user?.role);
 
-  const [records, setRecords]         = useState([]);
-  const [allTotals, setAllTotals]     = useState({});
-  const [loading, setLoading]         = useState(true);
-  const [error, setError]             = useState(null);
+  const [records, setRecords]           = useState([]);
+  const [allTotals, setAllTotals]       = useState({});
+  const [recordsLoading, setRecordsLoading] = useState(true);
+  const [totalsLoading, setTotalsLoading]   = useState(true);
+  const [error, setError]               = useState(null);
   const [search, setSearch]           = useState("");
   const [filterCat, setFilterCat]     = useState("All");
   const [photoRecord, setPhotoRecord] = useState(null);
@@ -605,18 +606,25 @@ function Inventory() {
 
   useEffect(() => {
     let cancelled = false;
-    // Fetch ArcGIS materials and Firestore issuance totals in parallel.
-    // Both results are needed before the Issue Item modal can render correctly.
-    Promise.all([
-      getMaterials(),
-      getIssuanceTotals(),
-    ]).then(([rows, totals]) => {
-      if (!cancelled) {
-        setRecords(rows.sort((a, b) => (b.date_time_received || 0) - (a.date_time_received || 0)));
-        setAllTotals(totals);
-      }
-    }).catch((err) => { if (!cancelled) setError(err.message); })
-      .finally(() => { if (!cancelled) setLoading(false); });
+
+    // ArcGIS fetch — unblocks the table as soon as it resolves.
+    getMaterials()
+      .then((rows) => {
+        if (!cancelled) {
+          setRecords(rows.sort((a, b) => (b.date_time_received || 0) - (a.date_time_received || 0)));
+          setRecordsLoading(false);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) { setError(err.message); setRecordsLoading(false); }
+      });
+
+    // Firestore totals — only needed for the issuance modal balance calculation.
+    // Resolves independently so a slow Firestore round-trip never delays the table.
+    getIssuanceTotals()
+      .then((totals) => { if (!cancelled) { setAllTotals(totals); setTotalsLoading(false); } })
+      .catch(() => { if (!cancelled) setTotalsLoading(false); });
+
     return () => { cancelled = true; };
   }, []);
 
@@ -661,26 +669,6 @@ function Inventory() {
     getIssuanceTotals().then(setAllTotals).catch(() => {});
   }, []);
 
-  if (loading) {
-    return (
-      <div className="page-inventory">
-        <div className="loading-state"><div className="spinner" aria-label="Loading" /><p>Loading materials receipts…</p></div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="page-inventory">
-        <div className="error-state">
-          <span className="error-icon" role="img" aria-label="Error">!</span>
-          <p>Failed to load inventory data</p>
-          <p className="error-detail">{error}</p>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="page-inventory">
       {/* ── KPI Summary ───────────────────────────── */}
@@ -688,7 +676,7 @@ function Inventory() {
         <div className="kpi-card">
           <div className="kpi-icon" style={{ background: "rgba(184,136,26,0.1)", color: "#B8881A" }} aria-hidden="true" />
           <div className="kpi-data">
-            <span className="kpi-value">{totals.count}</span>
+            <span className="kpi-value">{recordsLoading ? "—" : totals.count}</span>
             <span className="kpi-title">Receipts</span>
             <span className="kpi-trend">Filtered entries</span>
           </div>
@@ -696,7 +684,7 @@ function Inventory() {
         <div className="kpi-card">
           <div className="kpi-icon" style={{ background: "rgba(26,116,188,0.1)", color: "#1A74BC" }} aria-hidden="true" />
           <div className="kpi-data">
-            <span className="kpi-value">{totals.categories}</span>
+            <span className="kpi-value">{recordsLoading ? "—" : totals.categories}</span>
             <span className="kpi-title">Categories</span>
             <span className="kpi-trend">Material types</span>
           </div>
@@ -704,7 +692,7 @@ function Inventory() {
         <div className="kpi-card">
           <div className="kpi-icon" style={{ background: "rgba(30,158,82,0.1)", color: "#1E9E52" }} aria-hidden="true" />
           <div className="kpi-data">
-            <span className="kpi-value">{totals.totalQty.toLocaleString()}</span>
+            <span className="kpi-value">{recordsLoading ? "—" : totals.totalQty.toLocaleString()}</span>
             <span className="kpi-title">Total Qty</span>
             <span className="kpi-trend">Units received</span>
           </div>
@@ -712,7 +700,7 @@ function Inventory() {
         <div className="kpi-card">
           <div className="kpi-icon" style={{ background: "rgba(125,60,152,0.1)", color: "#7D3C98" }} aria-hidden="true" />
           <div className="kpi-data">
-            <span className="kpi-value">{totals.suppliers}</span>
+            <span className="kpi-value">{recordsLoading ? "—" : totals.suppliers}</span>
             <span className="kpi-title">Suppliers</span>
             <span className="kpi-trend">Unique suppliers</span>
           </div>
@@ -732,11 +720,11 @@ function Inventory() {
           </div>
           {canIssue && (
             <button
-              className="issue-btn"
+              className={`issue-btn${totalsLoading ? " issue-btn--loading" : ""}`}
               onClick={() => setIssuanceTarget({})}
               aria-label="Record a new item issuance"
             >
-              + Issue Item
+              {totalsLoading ? "Loading…" : "+ Issue Item"}
             </button>
           )}
         </div>
@@ -801,7 +789,46 @@ function Inventory() {
             </div>
 
             <div className="table-scroll table-mobile-cards" style={{ maxHeight: 520 }}>
-              {filtered.length === 0 ? (
+              {recordsLoading ? (
+                <table className="data-table" aria-busy="true" aria-label="Loading inventory data">
+                  <thead>
+                    <tr>
+                      <th scope="col">Date Received</th>
+                      <th scope="col">Material</th>
+                      <th scope="col">Category</th>
+                      <th scope="col">Qty</th>
+                      <th scope="col">Unit</th>
+                      <th scope="col">Supplier</th>
+                      <th scope="col">Received By</th>
+                      <th scope="col">Remarks</th>
+                      <th scope="col">Photos</th>
+                      {canIssue && <th scope="col">Issue</th>}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Array.from({ length: 8 }).map((_, i) => (
+                      <tr key={i} className="inv-skeleton-row">
+                        <td><span className="inv-skeleton-cell inv-skeleton-cell--sm" /></td>
+                        <td><span className="inv-skeleton-cell inv-skeleton-cell--lg" /></td>
+                        <td><span className="inv-skeleton-cell inv-skeleton-cell--md" /></td>
+                        <td><span className="inv-skeleton-cell inv-skeleton-cell--xs" /></td>
+                        <td><span className="inv-skeleton-cell inv-skeleton-cell--xs" /></td>
+                        <td><span className="inv-skeleton-cell inv-skeleton-cell--md" /></td>
+                        <td><span className="inv-skeleton-cell inv-skeleton-cell--md" /></td>
+                        <td><span className="inv-skeleton-cell inv-skeleton-cell--lg" /></td>
+                        <td><span className="inv-skeleton-cell inv-skeleton-cell--sm" /></td>
+                        {canIssue && <td><span className="inv-skeleton-cell inv-skeleton-cell--sm" /></td>}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : error ? (
+                <div className="error-state" style={{ padding: "32px 20px" }}>
+                  <span className="error-icon" role="img" aria-label="Error">!</span>
+                  <p>Failed to load inventory data</p>
+                  <p className="error-detail">{error}</p>
+                </div>
+              ) : filtered.length === 0 ? (
                 <div className="empty-state">
                   <p>No records match your filters.</p>
                   <p className="empty-hint">Submit receipts via the Survey123 Materials Receipt form.</p>

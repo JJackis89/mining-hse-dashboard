@@ -154,7 +154,9 @@ export async function getMaterials() {
     return _matCache.data;
   }
   const rows = await queryFeatures(MATERIALS_URL, {
-    outFields: "objectid,globalid,date_time_received,material_name,field_19,category,field_15,unit,field_16,quantity_received,received_by,remarks,photos,supplier,CreationDate,Creator",
+    // globalid, photos, CreationDate, Creator are never displayed — omitting them
+    // reduces the ArcGIS response payload and speeds up the initial page load.
+    outFields: "objectid,date_time_received,material_name,field_19,category,field_15,unit,field_16,quantity_received,received_by,remarks,supplier",
   });
   const result = rows.map((r) => ({
     ...r,

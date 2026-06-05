@@ -691,6 +691,27 @@
   font-weight: 600;
 }
 
+/* ── Skeleton rows (receipts table loading state) ───────────── */
+@keyframes inv-shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position:  400px 0; }
+}
+.inv-skeleton-row td { padding: 10px 12px; }
+.inv-skeleton-cell {
+  display: inline-block;
+  height: 12px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--border-color) 25%, var(--bg-input) 50%, var(--border-color) 75%);
+  background-size: 800px 100%;
+  animation: inv-shimmer 1.4s infinite linear;
+}
+.inv-skeleton-cell--xs { width: 36px; }
+.inv-skeleton-cell--sm { width: 64px; }
+.inv-skeleton-cell--md { width: 96px; }
+.inv-skeleton-cell--lg { width: 140px; }
+
+.issue-btn--loading { opacity: 0.6; cursor: default; }
+
 /* ── Issue Buttons ──────────────────────────────────────────── */
 .issue-btn {
   padding: 6px 14px;
