@@ -1,0 +1,70 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Returns true when the requesting user has role == 'admin' in userRoles.
+    // Uses exists() to avoid errors when the doc is not yet created.
+    function isAdmin() {
+      return request.auth != null
+        && exists(/databases/$(database)/documents/userRoles/$(request.auth.uid))
+        && get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    // ── userRoles ────────────────────────────────────────────────
+    // Each authenticated user can read and write their own profile document.
+    // This is required for first-time sign-up to create the profile, and for
+    // lastLogin updates on every subsequent sign-in.
+    // Admins can read and write any user's document (role changes, repairs).
+    match /userRoles/{userId} {
+      allow read:  if request.auth != null && (request.auth.uid == userId || isAdmin());
+      allow write: if request.auth != null && (request.auth.uid == userId || isAdmin());
+    }
+
+    // ── pendingRoles ─────────────────────────────────────────────
+    // Admin-pre-assigned roles keyed by email address.
+    // Users can read the doc matching their own email (consumed during sign-in).
+    // Only admins may write (create / update / delete pre-assignments).
+    match /pendingRoles/{email} {
+      allow read:  if request.auth != null && (request.auth.token.email == email || isAdmin());
+      allow write: if isAdmin();
+    }
+
+    // ── failedRegistrations ──────────────────────────────────────
+    // Fallback collection written when userRoles write is blocked.
+    // Any authenticated user may create their own entry.
+    // Only admins can read, update, or delete (Admin Panel Diagnostics recovery).
+    match /failedRegistrations/{userId} {
+      allow create:          if request.auth != null && request.auth.uid == userId;
+      allow read, update, delete: if isAdmin();
+    }
+
+    // ── issuances ────────────────────────────────────────────────
+    // All authenticated users can read issuance records.
+    // Only admins and storekeepers may create / update / delete.
+    match /issuances/{docId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null
+        && exists(/databases/$(database)/documents/userRoles/$(request.auth.uid))
+        && get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data.role
+             in ['admin', 'storekeeper'];
+    }
+
+    // ── inventoryItems ───────────────────────────────────────────
+    // Per-material metadata (item codes, warehouse locations).
+    // Read by all authenticated users; write restricted to admin / storekeeper.
+    match /inventoryItems/{docId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null
+        && exists(/databases/$(database)/documents/userRoles/$(request.auth.uid))
+        && get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data.role
+             in ['admin', 'storekeeper'];
+    }
+
+    // ── _diagnostics ─────────────────────────────────────────────
+    // Temporary write-test documents created by the Admin Panel Diagnostics tab.
+    // Any authenticated user may read, write, and delete.
+    match /_diagnostics/{docId} {
+      allow read, write, delete: if request.auth != null;
+    }
+  }
+}
