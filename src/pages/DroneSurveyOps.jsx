@@ -571,10 +571,8 @@ function DeleteConfirmModal({ activity, deleting, onClose, onConfirm }) {
 
 // ─── ActivitiesTab ────────────────────────────────────────────────
 function ActivitiesTab({ user }) {
-  const canCreate  = ["admin", "supervisor"].includes(user?.role);
-  const canManage  = useCallback((a) =>
-    user?.role === "admin" || (user?.role === "supervisor" && a.createdByUid === user.uid),
-  [user]);
+  const canCreate  = user?.role === "admin";
+  const canManage  = useCallback((a) => user?.role === "admin", [user]);
   const isAdmin    = user?.role === "admin";
 
   const [activities, setActivities]   = useState([]);
