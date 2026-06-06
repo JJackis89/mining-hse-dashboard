@@ -5,6 +5,9 @@ import {
   updateActivity, softDeleteActivity, restoreActivity,
 } from "../services/droneActivityService";
 import { useUser } from "../context/UserContext";
+import { usePermissionMatrix } from "../context/PermissionMatrixContext";
+import { canPerform } from "../utils/permissions";
+import PermissionNotice from "../components/PermissionNotice";
 
 // ─── Fleet data (update as fleet grows) ──────────────────────────
 const DRONE_FLEET = [
@@ -362,7 +365,7 @@ function ActivityFormModal({ activity, user, onClose, onSaved }) {
 }
 
 // ─── ActivityDetailModal ──────────────────────────────────────────
-function ActivityDetailModal({ activity, user, canManage, onClose, onEdit, onDelete, onRestore }) {
+function ActivityDetailModal({ activity, canEdit, canDelete, canRestore, onClose, onEdit, onDelete, onRestore }) {
   const [logs, setLogs]           = useState([]);
   const [logsLoading, setLogsLoading] = useState(true);
   const [activeSection, setActiveSection] = useState("details");
@@ -379,8 +382,6 @@ function ActivityDetailModal({ activity, user, canManage, onClose, onEdit, onDel
       .catch(() => setLogs([]))
       .finally(() => setLogsLoading(false));
   }, [activity.id]);
-
-  const isAdmin = user?.role === "admin";
 
   return (
     <div className="photo-modal-overlay" onClick={onClose} role="dialog" aria-modal="true" aria-label="Activity details">
@@ -402,13 +403,17 @@ function ActivityDetailModal({ activity, user, canManage, onClose, onEdit, onDel
             </div>
           </div>
           <div style={{ display: "flex", gap: 6, alignItems: "flex-start", flexShrink: 0 }}>
-            {!activity.isDeleted && canManage && (
+            {!activity.isDeleted && (canEdit || canDelete) && (
               <>
-                <button className="dso-action-btn dso-action-btn--edit" onClick={onEdit} aria-label="Edit">Edit</button>
-                <button className="dso-action-btn dso-action-btn--delete" onClick={onDelete} aria-label="Delete">Delete</button>
+                {canEdit && (
+                  <button className="dso-action-btn dso-action-btn--edit" onClick={onEdit} aria-label="Edit">Edit</button>
+                )}
+                {canDelete && (
+                  <button className="dso-action-btn dso-action-btn--delete" onClick={onDelete} aria-label="Delete">Delete</button>
+                )}
               </>
             )}
-            {activity.isDeleted && isAdmin && (
+            {activity.isDeleted && canRestore && (
               <button className="dso-action-btn dso-action-btn--restore" onClick={onRestore} aria-label="Restore">Restore</button>
             )}
             <button className="photo-modal-close" onClick={onClose} aria-label="Close">&#x2715;</button>
@@ -570,9 +575,14 @@ function DeleteConfirmModal({ activity, deleting, onClose, onConfirm }) {
 
 // ─── ActivitiesTab ────────────────────────────────────────────────
 function ActivitiesTab({ user }) {
-  const canCreate  = user?.role === "admin";
-  const canManage  = useCallback((a) => user?.role === "admin", [user]);
-  const isAdmin    = user?.role === "admin";
+  const matrix    = usePermissionMatrix();
+  const canCreate = canPerform(user, matrix, "droneSurveyOps", "create");
+  const canEdit   = canPerform(user, matrix, "droneSurveyOps", "edit");
+  const canDelete = canPerform(user, matrix, "droneSurveyOps", "delete");
+  // Showing/restoring archived records is the page's most sensitive
+  // capability — reserved for whoever holds Full Access (the owning
+  // department, Survey & GIS, or a platform administrator override).
+  const canManageArchive = canPerform(user, matrix, "droneSurveyOps", "manage");
 
   const [activities, setActivities]   = useState([]);
   const [loading, setLoading]         = useState(true);
@@ -715,7 +725,7 @@ function ActivitiesTab({ user }) {
             <span className="panel-badge">{visible.length} {visible.length === 1 ? "record" : "records"}</span>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            {isAdmin && (
+            {canManageArchive && (
               <button
                 className={`dso-archive-toggle${showArchived ? " dso-archive-toggle--active" : ""}`}
                 onClick={() => { setShowArchived((v) => !v); setStatusFilter("All"); setPage(1); }}
@@ -734,6 +744,10 @@ function ActivitiesTab({ user }) {
 
         {successMsg && (
           <div className="issuance-success-banner" role="status">{successMsg}</div>
+        )}
+
+        {!canCreate && !showArchived && (
+          <PermissionNotice department={user?.department} action="log or manage activities" />
         )}
 
         {/* Filter toolbar */}
@@ -839,17 +853,21 @@ function ActivitiesTab({ user }) {
                       <div className="dso-row-actions">
                         <button className="dso-row-btn" onClick={() => setDetailActivity(act)}
                           aria-label={`View ${act.activityName}`}>View</button>
-                        {!act.isDeleted && canManage(act) && (
+                        {!act.isDeleted && (canEdit || canDelete) && (
                           <>
-                            <button className="dso-row-btn dso-row-btn--edit"
-                              onClick={() => setEditActivity(act)}
-                              aria-label={`Edit ${act.activityName}`}>Edit</button>
-                            <button className="dso-row-btn dso-row-btn--delete"
-                              onClick={() => setDeleteTarget(act)}
-                              aria-label={`Delete ${act.activityName}`}>Delete</button>
+                            {canEdit && (
+                              <button className="dso-row-btn dso-row-btn--edit"
+                                onClick={() => setEditActivity(act)}
+                                aria-label={`Edit ${act.activityName}`}>Edit</button>
+                            )}
+                            {canDelete && (
+                              <button className="dso-row-btn dso-row-btn--delete"
+                                onClick={() => setDeleteTarget(act)}
+                                aria-label={`Delete ${act.activityName}`}>Delete</button>
+                            )}
                           </>
                         )}
-                        {act.isDeleted && isAdmin && (
+                        {act.isDeleted && canManageArchive && (
                           <button className="dso-row-btn dso-row-btn--restore"
                             onClick={() => handleRestore(act)}
                             aria-label={`Restore ${act.activityName}`}>Restore</button>
@@ -888,8 +906,9 @@ function ActivitiesTab({ user }) {
       {detailActivity && (
         <ActivityDetailModal
           activity={detailActivity}
-          user={user}
-          canManage={canManage(detailActivity)}
+          canEdit={canEdit}
+          canDelete={canDelete}
+          canRestore={canManageArchive}
           onClose={() => setDetailActivity(null)}
           onEdit={() => { setDetailActivity(null); setEditActivity(detailActivity); }}
           onDelete={() => { setDetailActivity(null); setDeleteTarget(detailActivity); }}

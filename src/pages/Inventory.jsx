@@ -6,8 +6,9 @@ import {
 } from "../services/issuanceService";
 import { exportToCsv } from "../utils/exportCsv";
 import { useUser } from "../context/UserContext";
-
-const ISSUANCE_ROLES = ["admin", "storekeeper"];
+import { usePermissionMatrix } from "../context/PermissionMatrixContext";
+import { canPerform } from "../utils/permissions";
+import PermissionNotice from "../components/PermissionNotice";
 
 const CSV_COLUMNS = [
   { key: "date_time_received", label: "Date Received" },
@@ -581,7 +582,8 @@ function IssuancesPanel({ refresh }) {
 // ─── Main Page ────────────────────────────────────────────────
 function Inventory() {
   const user     = useUser();
-  const canIssue = ISSUANCE_ROLES.includes(user?.role);
+  const matrix   = usePermissionMatrix();
+  const canIssue = canPerform(user, matrix, "inventory", "create");
 
   const [records, setRecords]           = useState([]);
   const [allTotals, setAllTotals]       = useState({});
@@ -897,9 +899,10 @@ function Inventory() {
         {activeTab === "issuances" && (
           <>
             {!canIssue && (
-              <div className="permission-notice" role="note">
-                You have read-only access to issuance records. Contact an admin or storekeeper to record new issuances.
-              </div>
+              <PermissionNotice
+                department={user?.department}
+                action="record new issuances"
+              />
             )}
             <IssuancesPanel refresh={issuancesRefresh} />
           </>

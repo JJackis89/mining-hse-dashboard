@@ -1,7 +1,8 @@
 import { NavLink } from "react-router-dom";
 import arimaLogo from "../assets/arima-logo.png";
 import { useUser } from "../context/UserContext";
-import { NAV_ITEMS, canAccess } from "../utils/permissions";
+import { usePermissionMatrix } from "../context/PermissionMatrixContext";
+import { NAV_ITEMS, canAccessRoute } from "../utils/permissions";
 
 const S = { fill: "none", stroke: "currentColor", strokeWidth: "1.5", strokeLinecap: "round", strokeLinejoin: "round" };
 
@@ -54,8 +55,8 @@ const NAV_ICONS = {
 
 function Sidebar({ collapsed, onToggle, isOpen, onClose }) {
   const user = useUser();
-  const role = user?.role ?? "viewer";
-  const visibleItems = NAV_ITEMS.filter((item) => canAccess(role, item.path));
+  const matrix = usePermissionMatrix();
+  const visibleItems = NAV_ITEMS.filter((item) => canAccessRoute(user, matrix, item.path));
 
   // On mobile overlay, always show labels regardless of desktop collapsed state
   const showLabels = isOpen || !collapsed;

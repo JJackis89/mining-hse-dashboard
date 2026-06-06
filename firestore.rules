@@ -49,6 +49,69 @@ service cloud.firestore {
           || (!(field in data) && request.resource.data[field] == safeDefault);
     }
 
+    // ── Department-Based Permissions — server-side mirror of
+    // src/utils/permissions.js (PERMISSION_LEVELS / pagePermission /
+    // canPerform). This is the actual enforcement boundary for the
+    // department permission matrix: client-side button hiding in the
+    // app is a UX convenience only — every mutating request below is
+    // re-checked here against the requester's stored `department` and
+    // the live `departmentPermissions/{pageKey}` matrix, so a direct
+    // SDK call, hand-crafted request, or browser console cannot bypass
+    // what an administrator configured in Department Permissions.
+
+    // Numeric rank for a permission-level string, low → high. Mirrors
+    // the PERMISSION_LEVELS ladder so "Edit" satisfies a "Create"
+    // requirement, "Full Access" satisfies everything, etc. Unknown
+    // strings rank as 'No Access' (0) — fail closed, never open.
+    function levelRank(level) {
+      return level == 'Full Access' ? 6
+           : level == 'Approve'     ? 5
+           : level == 'Delete'      ? 4
+           : level == 'Edit'        ? 3
+           : level == 'Create'      ? 2
+           : level == 'View Only'   ? 1
+           : 0;
+    }
+
+    // The requester's stored department, or '' when signed out, profile-
+    // less, or unassigned — which simply matches no department row below.
+    function userDept() {
+      return request.auth != null
+          && exists(/databases/$(database)/documents/userRoles/$(request.auth.uid))
+          && 'department' in get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data
+        ? get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data.department
+        : '';
+    }
+
+    // The level `dept` holds for `pageKey`, defaulting to 'View Only'
+    // when the matrix doc or the department's entry doesn't exist yet —
+    // mirrors DEFAULT_PERMISSION_LEVEL in permissions.js. This default
+    // satisfies "view" checks but fails every mutating one, so the
+    // system is safe (read-only for everyone but admins) even in the
+    // brief window before an administrator first opens Department
+    // Permissions and ensureMatrixSeeded() writes the spec's defaults.
+    function deptPermissionLevel(pageKey, dept) {
+      return exists(/databases/$(database)/documents/departmentPermissions/$(pageKey))
+          && 'permissions' in get(/databases/$(database)/documents/departmentPermissions/$(pageKey)).data
+          && dept in get(/databases/$(database)/documents/departmentPermissions/$(pageKey)).data.permissions
+        ? get(/databases/$(database)/documents/departmentPermissions/$(pageKey)).data.permissions[dept]
+        : 'View Only';
+    }
+
+    // True when the requester is an administrator — the unrestricted
+    // super-user override ("Administrators get unrestricted access to
+    // everything") — OR their department's configured level for
+    // `pageKey` satisfies `minLevel`. This is the one function every
+    // department-gated collection rule below calls; it is the literal
+    // server-side equivalent of canPerform() in permissions.js.
+    function hasDeptPermission(pageKey, minLevel) {
+      return isAdmin() || (
+        request.auth != null
+        && exists(/databases/$(database)/documents/userRoles/$(request.auth.uid))
+        && levelRank(deptPermissionLevel(pageKey, userDept())) >= levelRank(minLevel)
+      );
+    }
+
     // ── userRoles ────────────────────────────────────────────────
     // Single source of truth for role + account status. Field-level checks
     // below are the actual enforcement point for "no self-promotion": a user
@@ -121,43 +184,72 @@ service cloud.firestore {
     }
 
     // ── issuances ────────────────────────────────────────────────
-    // All authenticated users can read issuance records.
-    // Only admins and storekeepers may create / update / delete.
+    // All authenticated users can read issuance records (transparency).
+    // Writes (record / edit / delete an issuance, the "issue materials,
+    // approve transactions" capability) require at least 'Create' on the
+    // Inventory page — by default only Stores / Inventory holds that
+    // (Full Access); every other department is 'View Only' and is
+    // rejected here even if they bypass the UI. Administrators always pass.
     match /issuances/{docId} {
       allow read: if request.auth != null;
-      allow write: if request.auth != null
-        && exists(/databases/$(database)/documents/userRoles/$(request.auth.uid))
-        && get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data.role
-             in ['admin', 'storekeeper'];
+      allow write: if hasDeptPermission('inventory', 'Create');
     }
 
     // ── inventoryItems ───────────────────────────────────────────
     // Per-material metadata (item codes, warehouse locations).
-    // Read by all authenticated users; write restricted to admin / storekeeper.
+    // Same Inventory-page department gate as issuances — see above.
     match /inventoryItems/{docId} {
       allow read: if request.auth != null;
-      allow write: if request.auth != null
-        && exists(/databases/$(database)/documents/userRoles/$(request.auth.uid))
-        && get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data.role
-             in ['admin', 'storekeeper'];
+      allow write: if hasDeptPermission('inventory', 'Create');
     }
 
     // ── droneActivities ──────────────────────────────────────────
-    // All authenticated users can read.
-    // Only admins may create, update, or delete.
+    // All authenticated users can read (transparency for other depts).
+    // Create / update / delete require at least 'Create' on the Drone &
+    // Survey Operations page — by default only Survey & GIS holds that
+    // (Full Access: create/update/delete activities, manage progress
+    // records); every other department is 'View Only'. Admins always pass.
     match /droneActivities/{activityId} {
       allow read: if request.auth != null;
-      allow write: if request.auth != null &&
-        get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data.role == 'admin';
+      allow write: if hasDeptPermission('droneSurveyOps', 'Create');
     }
 
     // ── droneActivityLogs ─────────────────────────────────────────
     // Immutable audit trail — only append, never edit or delete.
-    // Any authenticated user can read. Only admins may create entries.
+    // Any authenticated user can read. The create gate intentionally
+    // mirrors droneActivities' write gate one-for-one: every activity
+    // mutation the client performs writes a paired log entry (see
+    // writeLog() in droneActivityService.js), so whoever may create/
+    // update/delete an activity must also be able to log it, or their
+    // (otherwise-valid) activity write fails on the follow-up log write.
     match /droneActivityLogs/{logId} {
       allow read: if request.auth != null;
-      allow create: if request.auth != null &&
-        get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data.role == 'admin';
+      allow create: if hasDeptPermission('droneSurveyOps', 'Create');
+      allow update, delete: if false;
+    }
+
+    // ── departmentPermissions ────────────────────────────────────
+    // The live department × page permission matrix that
+    // hasDeptPermission() above (and canPerform()/canAccessRoute() on
+    // the client) reads to decide every gated action platform-wide.
+    // Any authenticated user may read it — each session needs it to
+    // compute its own effective permissions and render the right UI.
+    // Only administrators may create/update/delete entries; every
+    // change is additionally written to permissionAuditLog by the
+    // client (see savePagePermissions in departmentPermissionsService.js).
+    match /departmentPermissions/{pageKey} {
+      allow read:  if request.auth != null;
+      allow write: if isAdmin();
+    }
+
+    // ── permissionAuditLog ───────────────────────────────────────
+    // Immutable trail of every permission-matrix change: administrator,
+    // department affected, previous level, new level, timestamp — append
+    // only, exactly like droneActivityLogs. Admin-only in both directions;
+    // this is an administrative record, not a user-facing collection.
+    match /permissionAuditLog/{logId} {
+      allow read:           if isAdmin();
+      allow create:         if isAdmin();
       allow update, delete: if false;
     }
 

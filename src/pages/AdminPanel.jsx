@@ -17,7 +17,13 @@ import {
   reactivateUser,
   deleteUserProfile,
 } from "../services/adminService";
-import { ROLES, ROLE_LABELS, ROUTE_ACCESS, NAV_ITEMS } from "../utils/permissions";
+import { ROLES, ROLE_LABELS, DEPARTMENTS, PERMISSION_LEVELS } from "../utils/permissions";
+import {
+  subscribeToPermissionRows,
+  ensureMatrixSeeded,
+  savePagePermissions,
+  subscribeToAuditLog,
+} from "../services/departmentPermissionsService";
 
 const PAGE_SIZE      = 20;
 const STATUS_OPTIONS = ["Active", "Pending Approval", "Suspended", "Deactivated"];
@@ -41,6 +47,12 @@ function fmt(ts) {
   if (!ts) return "—";
   const d = ts.toDate ? ts.toDate() : new Date(ts);
   return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+function fmtDateTime(ts) {
+  if (!ts) return "—";
+  const d = ts.toDate ? ts.toDate() : new Date(ts);
+  return d.toLocaleString("en-GB");
 }
 
 function initials(name, email) {
@@ -71,50 +83,6 @@ function SortTh({ label, field, sortField, sortDir, onSort, ...rest }) {
         {active ? (sortDir === "asc" ? " ↑" : " ↓") : " ↕"}
       </span>
     </th>
-  );
-}
-
-// ─── Role Access Matrix ───────────────────────────────────────
-function AccessMatrix() {
-  const pages     = NAV_ITEMS.filter((n) => n.path !== "/admin");
-  const adminItem = NAV_ITEMS.find((n) => n.path === "/admin");
-  return (
-    <div className="admin-matrix-wrap">
-      <table className="data-table admin-matrix">
-        <thead>
-          <tr>
-            <th scope="col">Role</th>
-            {pages.map((p) => <th key={p.path} scope="col">{p.label}</th>)}
-            <th scope="col">{adminItem.label}</th>
-            <th scope="col">Can Issue Items</th>
-          </tr>
-        </thead>
-        <tbody>
-          {ROLES.map((role) => (
-            <tr key={role}>
-              <td className="bold">{ROLE_LABELS[role]}</td>
-              {pages.map((p) => (
-                <td key={p.path} className="admin-matrix-cell">
-                  {(ROUTE_ACCESS[p.path] ?? []).includes(role)
-                    ? <span className="access-yes" aria-label="Access granted">✓</span>
-                    : <span className="access-no"  aria-label="No access">—</span>}
-                </td>
-              ))}
-              <td className="admin-matrix-cell">
-                {role === "admin"
-                  ? <span className="access-yes" aria-label="Access granted">✓</span>
-                  : <span className="access-no"  aria-label="No access">—</span>}
-              </td>
-              <td className="admin-matrix-cell">
-                {["admin", "storekeeper"].includes(role)
-                  ? <span className="access-yes" aria-label="Access granted">✓</span>
-                  : <span className="access-no"  aria-label="No access">—</span>}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
   );
 }
 
@@ -163,6 +131,18 @@ function AdminPanel() {
   const [inviteMsg, setInviteMsg]           = useState("");
   const [revoking, setRevoking]             = useState({});
 
+  // ── Department Permissions ──────────────────────────────────
+  const [permRows, setPermRows]             = useState([]);
+  const [permLoading, setPermLoading]       = useState(true);
+  const [permError, setPermError]           = useState(null);
+  const [permEdits, setPermEdits]           = useState({});   // { [pageKey]: { [dept]: level } }
+  const [permSaving, setPermSaving]         = useState({});   // { [pageKey]: bool }
+  const [permMsg, setPermMsg]               = useState({});   // { [pageKey]: string }
+  const [seeding, setSeeding]               = useState(false);
+  const [seedMsg, setSeedMsg]               = useState("");
+  const [auditLog, setAuditLog]             = useState([]);
+  const [auditLoading, setAuditLoading]     = useState(true);
+
   // Real-time subscription — track last snapshot time for diagnostics
   useEffect(() => {
     const unsub = subscribeToUsers(
@@ -197,6 +177,63 @@ function AdminPanel() {
   useEffect(() => {
     if (activeTab === "invites") loadInvites();
   }, [activeTab, loadInvites]);
+
+  // Department Permissions — subscribe only while the tab is open
+  useEffect(() => {
+    if (activeTab !== "permissions") return;
+    setPermLoading(true);
+    setAuditLoading(true);
+    const unsubRows = subscribeToPermissionRows(
+      (rows) => { setPermRows(rows); setPermLoading(false); setPermError(null); },
+      (err)  => { setPermError(err.message); setPermLoading(false); }
+    );
+    const unsubAudit = subscribeToAuditLog(
+      (rows) => { setAuditLog(rows); setAuditLoading(false); },
+      (err)  => { console.warn("[ARIMA] Audit log read error:", err.message); setAuditLoading(false); }
+    );
+    return () => { unsubRows(); unsubAudit(); };
+  }, [activeTab]);
+
+  const handlePermLevelChange = (pageKey, dept, level) => {
+    setPermEdits((prev) => ({
+      ...prev,
+      [pageKey]: { ...(prev[pageKey] ?? {}), [dept]: level },
+    }));
+    setPermMsg((prev) => ({ ...prev, [pageKey]: "" }));
+  };
+
+  const handleSavePagePermissions = async (row) => {
+    const edits = permEdits[row.key];
+    if (!edits || Object.keys(edits).length === 0) return;
+    setPermSaving((prev) => ({ ...prev, [row.key]: true }));
+    setPermMsg((prev) => ({ ...prev, [row.key]: "" }));
+    try {
+      const next = { ...row.permissions, ...edits };
+      await savePagePermissions(row.key, next, user);
+      setPermEdits((prev) => {
+        const { [row.key]: _drop, ...rest } = prev;
+        return rest;
+      });
+      setPermMsg((prev) => ({ ...prev, [row.key]: "Saved." }));
+    } catch (err) {
+      setPermMsg((prev) => ({ ...prev, [row.key]: `Save failed: ${err.message}` }));
+    } finally {
+      setPermSaving((prev) => ({ ...prev, [row.key]: false }));
+    }
+  };
+
+  const handleSeedMatrix = async () => {
+    setSeeding(true);
+    setSeedMsg("");
+    try {
+      const count = await ensureMatrixSeeded(user);
+      setSeedMsg(count > 0 ? `Seeded ${count} page${count === 1 ? "" : "s"} with default permissions.` : "Already up to date — nothing to seed.");
+    } catch (err) {
+      setSeedMsg(`Seeding failed: ${err.message}`);
+    } finally {
+      setSeeding(false);
+    }
+  };
 
   // ── Derived filter options ───────────────────────────────────
   const departments = useMemo(
@@ -448,8 +485,8 @@ function AdminPanel() {
           {[
             { id: "users",       label: "Users" },
             { id: "invites",     label: "Invite Users" },
+            { id: "permissions", label: "Department Permissions" },
             { id: "diagnostics", label: "Diagnostics" },
-            { id: "access",      label: "Role Access Guide" },
           ].map((t) => (
             <button
               key={t.id}
@@ -643,15 +680,21 @@ function AdminPanel() {
 
                           {/* Department */}
                           <td>
-                            <input
+                            <select
                               className="admin-field-input"
-                              type="text"
-                              value={displayDept}
+                              value={DEPARTMENTS.includes(displayDept) ? displayDept : ""}
                               onChange={(e) => handleFieldChange(u.id, "department", e.target.value)}
-                              placeholder="—"
-                              disabled={saving[u.id]}
+                              disabled={isMe || saving[u.id]}
                               aria-label={`Department for ${u.email}`}
-                            />
+                            >
+                              <option value="">— Select —</option>
+                              {!DEPARTMENTS.includes(displayDept) && displayDept && (
+                                <option value={displayDept}>{displayDept} (legacy)</option>
+                              )}
+                              {DEPARTMENTS.map((d) => (
+                                <option key={d} value={d}>{d}</option>
+                              ))}
+                            </select>
                           </td>
 
                           {/* Rank */}
@@ -1154,14 +1197,137 @@ service cloud.firestore {
           );
         })()}
 
-        {/* ── Role Access Guide tab ─────────────── */}
-        {activeTab === "access" && (
+        {/* ── Department Permissions tab ────────── */}
+        {activeTab === "permissions" && (
           <div style={{ padding: "16px" }}>
-            <p className="admin-section-desc" style={{ marginBottom: 16 }}>
-              This table shows which sections of the platform each role can access.
-              Administrators can update roles at any time in the Users tab.
-            </p>
-            <AccessMatrix />
+            <div className="admin-perm-header">
+              <p className="admin-section-desc" style={{ marginBottom: 0, maxWidth: 720 }}>
+                Set each department's access level for every page. Administrators always
+                have Full Access regardless of these settings. Changes apply immediately,
+                platform-wide, and are recorded in the audit log below.
+              </p>
+              <button className="admin-refresh-btn" onClick={handleSeedMatrix} disabled={seeding}>
+                {seeding ? "Seeding…" : "Seed Default Permissions"}
+              </button>
+            </div>
+            {seedMsg && <p className="admin-sync-msg" style={{ marginTop: 8 }}>{seedMsg}</p>}
+
+            {permLoading && <p className="admin-section-desc">Loading permission matrix…</p>}
+            {permError && (
+              <p className="admin-section-desc" style={{ color: "var(--danger)" }}>Error: {permError}</p>
+            )}
+
+            {!permLoading && !permError && permRows.map((row) => {
+              const edits = permEdits[row.key] ?? {};
+              const dirty = Object.keys(edits).length > 0;
+              return (
+                <div key={row.key} className="admin-perm-page-card">
+                  <div className="admin-perm-page-head">
+                    <h4 className="admin-section-title" style={{ margin: 0 }}>
+                      {row.label}
+                      {row.locked && (
+                        <span className="admin-perm-locked-badge">Administrators only</span>
+                      )}
+                    </h4>
+                    <div className="admin-perm-page-actions">
+                      {permMsg[row.key] && <span className="admin-sync-msg">{permMsg[row.key]}</span>}
+                      <button
+                        className="admin-refresh-btn"
+                        onClick={() => handleSavePagePermissions(row)}
+                        disabled={!dirty || row.locked || permSaving[row.key]}
+                      >
+                        {permSaving[row.key] ? "Saving…" : "Save Changes"}
+                      </button>
+                    </div>
+                  </div>
+
+                  {row.locked ? (
+                    <p className="admin-section-desc">
+                      This page is restricted to platform Administrators only — it is not
+                      governed by department permissions and cannot be reconfigured here.
+                    </p>
+                  ) : (
+                    <div className="admin-matrix-wrap">
+                      <table className="data-table admin-matrix">
+                        <thead>
+                          <tr>
+                            <th scope="col">Department</th>
+                            <th scope="col">Permission Level</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {DEPARTMENTS.map((dept) => {
+                            const saved   = row.permissions?.[dept] ?? "View Only";
+                            const level   = edits[dept] ?? saved;
+                            const changed = dept in edits && edits[dept] !== saved;
+                            return (
+                              <tr key={dept}>
+                                <td className="bold">{dept}</td>
+                                <td>
+                                  <select
+                                    className="admin-role-select"
+                                    value={level}
+                                    onChange={(e) => handlePermLevelChange(row.key, dept, e.target.value)}
+                                    aria-label={`${row.label} permission level for ${dept}`}
+                                  >
+                                    {PERMISSION_LEVELS.map((lvl) => (
+                                      <option key={lvl} value={lvl}>{lvl}</option>
+                                    ))}
+                                  </select>
+                                  {changed && (
+                                    <span
+                                      className="admin-perm-changed-dot"
+                                      title="Unsaved change"
+                                      aria-label="Unsaved change"
+                                    />
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {/* Audit log */}
+            <h4 className="admin-section-title" style={{ marginTop: 28 }}>Permission Change Audit Log</h4>
+            <p className="admin-section-desc">Most recent changes to department permissions, newest first.</p>
+            {auditLoading && <p className="admin-section-desc">Loading audit log…</p>}
+            {!auditLoading && auditLog.length === 0 && (
+              <p className="admin-section-desc">No permission changes have been recorded yet.</p>
+            )}
+            {!auditLoading && auditLog.length > 0 && (
+              <div className="admin-matrix-wrap">
+                <table className="data-table admin-matrix">
+                  <thead>
+                    <tr>
+                      <th scope="col">When</th>
+                      <th scope="col">Administrator</th>
+                      <th scope="col">Page</th>
+                      <th scope="col">Department</th>
+                      <th scope="col">Previous Level</th>
+                      <th scope="col">New Level</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {auditLog.map((entry) => (
+                      <tr key={entry.id}>
+                        <td className="mono" style={{ fontSize: 11, whiteSpace: "nowrap" }}>{fmtDateTime(entry.changedAt)}</td>
+                        <td>{entry.changedBy || "—"}</td>
+                        <td>{entry.pageLabel || entry.pageKey}</td>
+                        <td>{entry.department}</td>
+                        <td>{entry.previousLevel}</td>
+                        <td className="bold">{entry.newLevel}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
       </section>

@@ -343,6 +343,55 @@
 }
 .admin-sync-msg { font-size: 12px; color: var(--text-secondary); }
 
+/* ── Department Permissions tab ─────────────────────────────── */
+.admin-perm-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.admin-perm-page-card {
+  margin-top: 20px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+.admin-perm-page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.admin-perm-page-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.admin-perm-locked-badge {
+  margin-left: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--purple);
+  background: rgba(125, 60, 152, 0.12);
+  border-radius: 999px;
+  padding: 3px 9px;
+  vertical-align: middle;
+}
+.admin-perm-changed-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-orange);
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
 /* ── Profile Sync Error Banner ──────────────────────────────── */
 .profile-sync-banner {
   display: flex;
@@ -1070,6 +1119,14 @@
   font-size: 12px;
   color: var(--text-secondary);
 }
+.permission-notice--blocked {
+  background: rgba(212, 130, 10, 0.08);
+  border: 1px solid rgba(212, 130, 10, 0.25);
+  border-radius: 6px;
+  color: var(--text-primary);
+  margin: 12px 16px;
+}
+.permission-notice--blocked strong { color: var(--warning); }
 
 /* ── Drone & Survey Operations Page ─────────────────────────── */
 .page-drone-survey { padding: 20px; }

@@ -16,7 +16,9 @@ import {
 } from "firebase/firestore";
 import { auth, db } from "./firebase";
 import { UserContext, useUser } from "./context/UserContext";
-import { canAccess, ROUTE_ACCESS } from "./utils/permissions";
+import { PermissionMatrixContext, usePermissionMatrix } from "./context/PermissionMatrixContext";
+import { canAccessRoute } from "./utils/permissions";
+import { subscribeToPermissionRows, matrixFromRows } from "./services/departmentPermissionsService";
 
 import arimaLogo from "./assets/arima-logo.png";
 
@@ -96,8 +98,9 @@ function PageLoader() {
 
 // ─── Route Guard ──────────────────────────────────────────────
 function GuardedRoute({ path, children }) {
-  const user = useUser();
-  if (!user || !canAccess(user.role, path)) {
+  const user   = useUser();
+  const matrix = usePermissionMatrix();
+  if (!user || !canAccessRoute(user, matrix, path)) {
     return (
       <div className="access-denied-state">
         <p className="access-denied-title">Access Restricted</p>
@@ -115,6 +118,7 @@ function GuardedRoute({ path, children }) {
 function App() {
   const [user, setUser]                 = useState(null);
   const [authLoading, setAuthLoading]   = useState(true);
+  const [permissionMatrix, setPermissionMatrix] = useState({});
   const [email, setEmail]               = useState("");
   const [password, setPassword]         = useState("");
   const [confirmPass, setConfirmPass]   = useState("");
@@ -375,6 +379,24 @@ function App() {
     };
   }, []);
 
+  // Live department permission matrix — every signed-in session needs this
+  // to compute its own effective access (route guards, nav filtering, button
+  // gating). Subscribed once per sign-in and shared platform-wide via
+  // PermissionMatrixContext; an admin's edits in Department Permissions
+  // therefore take effect for everyone immediately, the same way role/
+  // status changes already do via watchOwnProfile.
+  useEffect(() => {
+    if (!user?.uid) {
+      setPermissionMatrix({});
+      return;
+    }
+    const unsubscribe = subscribeToPermissionRows(
+      (rows) => setPermissionMatrix(matrixFromRows(rows)),
+      (err) => console.warn("[ARIMA] Permission matrix read error:", err.code)
+    );
+    return unsubscribe;
+  }, [user?.uid]);
+
   const handleLogin = async (e) => {
     e.preventDefault();
     setError("");
@@ -604,6 +626,7 @@ function App() {
 
   return (
     <UserContext.Provider value={user}>
+    <PermissionMatrixContext.Provider value={permissionMatrix}>
       <div className={`app-layout ${sidebarCollapsed ? "app-layout--collapsed" : ""}`}>
         {mobileSidebarOpen && (
           <div
@@ -694,6 +717,7 @@ function App() {
           </main>
         </div>
       </div>
+    </PermissionMatrixContext.Provider>
     </UserContext.Provider>
   );
 }
