@@ -11,6 +11,7 @@ import {
   getDoc,
   setDoc,
   deleteDoc,
+  onSnapshot,
   serverTimestamp,
 } from "firebase/firestore";
 import { auth, db } from "./firebase";
@@ -128,6 +129,47 @@ function App() {
   // Carries fullName from the signup form into the async onAuthStateChanged handler
   const signupFullNameRef = useRef("");
 
+  // Unsubscribe handle for the live userRoles/{uid} listener — re-created on
+  // every auth state change, torn down on the next change or unmount so role
+  // and status edits made in the Admin Panel apply to the session immediately.
+  const profileUnsubRef = useRef(null);
+
+  // Watches the signed-in user's own profile document in real time and keeps
+  // local state (role, accountStatus, etc.) in sync with Firestore. If an
+  // administrator suspends/deactivates the account, the session is force-signed-out.
+  const watchOwnProfile = (uid) => {
+    if (profileUnsubRef.current) {
+      profileUnsubRef.current();
+      profileUnsubRef.current = null;
+    }
+    profileUnsubRef.current = onSnapshot(
+      doc(db, "userRoles", uid),
+      (snap) => {
+        if (!snap.exists()) return;
+        const data       = snap.data();
+        const freshRole   = data.role          ?? "viewer";
+        const freshStatus = data.accountStatus ?? "Active";
+
+        setUser((prev) => {
+          if (!prev || prev.uid !== uid) return prev;
+          if (prev.role === freshRole && prev.accountStatus === freshStatus) return prev;
+          console.log(
+            `[ARIMA ${new Date().toISOString()}] Profile updated — role=${freshRole} status=${freshStatus} (was role=${prev.role} status=${prev.accountStatus})`
+          );
+          return {
+            ...prev,
+            role:          freshRole,
+            accountStatus: freshStatus,
+            fullName:      data.fullName   ?? prev.fullName,
+            department:    data.department ?? prev.department,
+            rank:          data.rank       ?? prev.rank,
+          };
+        });
+      },
+      (err) => console.warn(`[ARIMA] Profile watch error uid=${uid.slice(0, 8)}:`, err.code)
+    );
+  };
+
   useEffect(() => {
     // Support comma-separated list of admin emails
     const ADMIN_EMAILS = (import.meta.env.VITE_FIRST_ADMIN_EMAIL ?? "")
@@ -140,6 +182,13 @@ function App() {
       const iso = () => new Date().toISOString();
       console.log(`[ARIMA ${iso()}] onAuthStateChanged:`, firebaseUser ? firebaseUser.email : "signed out");
 
+      // Tear down any live profile listener from a previous session before
+      // resolving the new one — prevents cross-account state leakage.
+      if (profileUnsubRef.current) {
+        profileUnsubRef.current();
+        profileUnsubRef.current = null;
+      }
+
       if (firebaseUser) {
         const isDesignatedAdmin = ADMIN_EMAILS.includes(
           firebaseUser.email.toLowerCase()
@@ -147,27 +196,49 @@ function App() {
 
         const onSyncFail = () => setProfileSyncFailed(true);
 
+        // True only on the request that just called createUserWithEmailAndPassword —
+        // distinguishes "new registration" from "returning sign-in" so we never
+        // clobber an existing profile's name/createdAt/status on every login.
+        const isNewRegistration = !!signupFullNameRef.current;
+
         if (isDesignatedAdmin) {
           const capturedName = signupFullNameRef.current;
           signupFullNameRef.current = "";
+
+          // Only stamp identity fields on first creation — merge writes on
+          // every subsequent login must NOT overwrite fullName/createdAt
+          // with blanks, and must NEVER be able to demote this account.
           writeProfileRetrying(firebaseUser.uid, {
             uid:           firebaseUser.uid,
             email:         firebaseUser.email,
-            fullName:      capturedName,
+            ...(isNewRegistration && {
+              fullName:  capturedName,
+              createdAt: serverTimestamp(),
+            }),
             role:          "admin",
-            department:    "",
-            rank:          "",
             accountStatus: "Active",
-            createdAt:     serverTimestamp(),
             lastLogin:     serverTimestamp(),
           }, onSyncFail);
-          setUser({ email: firebaseUser.email, uid: firebaseUser.uid, role: "admin" });
+
+          setUser({
+            email: firebaseUser.email, uid: firebaseUser.uid,
+            role: "admin", accountStatus: "Active",
+          });
+          watchOwnProfile(firebaseUser.uid);
           setAuthLoading(false);
           console.log(`[ARIMA ${iso()}] Auth resolved in ${Date.now() - t0}ms (admin)`);
           return;
         }
 
-        let role = "viewer";
+        // ── Default posture for every non-designated-admin account ──
+        // Never trust a client-supplied role; the safe default is the lowest
+        // privilege tier, and brand-new accounts always start out unapproved.
+        let role          = "viewer";
+        let accountStatus = "Active";
+        let fullName      = "";
+        let department    = "";
+        let rank          = "";
+
         try {
           // Promise.allSettled so a permission-denied on pendingRoles never
           // crashes the entire read — we fall back gracefully to viewer role.
@@ -189,29 +260,53 @@ function App() {
           const pendingSnap = pendingResult.status === "fulfilled" ? pendingResult.value : null;
 
           if (roleSnap.exists()) {
-            role = roleSnap.data().role ?? "viewer";
-            signupFullNameRef.current = "";
+            // ── Returning user — role/status are whatever Firestore says.
+            // The server is the single source of truth; the client never
+            // assigns or escalates its own privileges here.
             const existing = roleSnap.data();
-            const updates  = { lastLogin: serverTimestamp() };
+            role          = existing.role          ?? "viewer";
+            accountStatus = existing.accountStatus ?? "Active";
+            fullName      = existing.fullName      ?? "";
+            department    = existing.department    ?? "";
+            rank          = existing.rank          ?? "";
+            signupFullNameRef.current = "";
+
+            const updates = { lastLogin: serverTimestamp() };
             if (!Object.prototype.hasOwnProperty.call(existing, "accountStatus")) {
+              // Legacy profile predating the status field — backfill as Active
+              // so existing operators are not retroactively locked out.
               updates.uid           = firebaseUser.uid;
               updates.fullName      = existing.fullName   || "";
               updates.department    = existing.department || "";
               updates.rank          = existing.rank       || "";
               updates.accountStatus = "Active";
+              accountStatus = "Active";
             }
             // lastLogin update — single attempt, not worth retrying
             setDoc(doc(db, "userRoles", firebaseUser.uid), updates, { merge: true })
               .catch((err) =>
                 console.error(`[ARIMA ${iso()}] lastLogin update failed:`, err.code, err.message)
               );
-            console.log(`[ARIMA ${iso()}] Existing user role=${role}`);
+            console.log(`[ARIMA ${iso()}] Existing user role=${role} status=${accountStatus}`);
           } else {
-            // Brand-new user
+            // ── Brand-new account ──────────────────────────────────
+            // Per platform policy: new registrations NEVER receive elevated
+            // access. They land as the lowest-privilege role, rank "Officer",
+            // and "Pending Approval" status — an administrator must
+            // explicitly review and promote them before they can use the app.
             const capturedName = signupFullNameRef.current;
             signupFullNameRef.current = "";
 
+            role          = "viewer";
+            accountStatus = "Pending Approval";
+            fullName      = capturedName;
+            rank          = "Officer";
+
             if (pendingSnap?.exists()) {
+              // An admin pre-assigned a role via Invite Users — honor it,
+              // but a pre-assigned role still requires no extra trust beyond
+              // what the admin explicitly granted (admin role is filtered out
+              // of the invite UI and blocked server-side).
               role = pendingSnap.data().role ?? "viewer";
               deleteDoc(doc(db, "pendingRoles", firebaseUser.email))
                 .catch((err) =>
@@ -219,15 +314,15 @@ function App() {
                 );
             }
 
-            console.log(`[ARIMA ${iso()}] New user — writing profile role=${role} name="${capturedName}"`);
+            console.log(`[ARIMA ${iso()}] New user — writing profile role=${role} status=${accountStatus} name="${capturedName}"`);
             writeProfileRetrying(firebaseUser.uid, {
               uid:           firebaseUser.uid,
               email:         firebaseUser.email,
-              fullName:      capturedName,
+              fullName,
               role,
               department:    "",
-              rank:          "",
-              accountStatus: "Active",
+              rank,
+              accountStatus,
               createdAt:     serverTimestamp(),
               lastLogin:     serverTimestamp(),
             }, onSyncFail);
@@ -236,20 +331,34 @@ function App() {
           console.error(`[ARIMA ${iso()}] Read error:`, err.code, err.message);
           const recoveryName = signupFullNameRef.current;
           signupFullNameRef.current = "";
+
+          // We couldn't confirm whether a profile already exists. Only a
+          // registration-in-progress should be parked as Pending Approval;
+          // a returning user hitting a transient read error must not be
+          // locked out of an account that was already active.
+          role          = "viewer";
+          accountStatus = isNewRegistration ? "Pending Approval" : "Active";
+          fullName      = recoveryName || "";
+          rank          = isNewRegistration ? "Officer" : "";
+
           writeProfileRetrying(firebaseUser.uid, {
             uid:           firebaseUser.uid,
             email:         firebaseUser.email,
-            fullName:      recoveryName || "",
+            fullName,
             role,
             department:    "",
-            rank:          "",
-            accountStatus: "Active",
+            rank,
+            accountStatus,
             createdAt:     serverTimestamp(),
             lastLogin:     serverTimestamp(),
           }, onSyncFail);
         }
 
-        setUser({ email: firebaseUser.email, uid: firebaseUser.uid, role });
+        setUser({
+          email: firebaseUser.email, uid: firebaseUser.uid,
+          role, accountStatus, fullName, department, rank,
+        });
+        watchOwnProfile(firebaseUser.uid);
       } else {
         setUser(null);
       }
@@ -257,7 +366,13 @@ function App() {
       console.log(`[ARIMA ${iso()}] Auth complete in ${Date.now() - t0}ms`);
     });
 
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+      if (profileUnsubRef.current) {
+        profileUnsubRef.current();
+        profileUnsubRef.current = null;
+      }
+    };
   }, []);
 
   const handleLogin = async (e) => {
@@ -425,12 +540,63 @@ function App() {
 
           {isSignUp ? (
             <p className="login-footer">
-              New accounts are assigned <strong>Viewer</strong> access by default.
-              An administrator can upgrade your permissions.
+              New accounts require <strong>administrator approval</strong> before sign-in.
+              You will be notified once your access is granted.
             </p>
           ) : (
             <p className="login-footer">Authorized personnel only. All access is logged.</p>
           )}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Account status gate ───────────────────────────────────────
+  // Authenticated, but not cleared for entry. Render a dedicated holding
+  // screen instead of the app shell — this is the enforcement point for
+  // "permission changes take effect immediately": the live profile listener
+  // (watchOwnProfile) updates user.accountStatus in real time, so an admin
+  // flipping a user to Suspended/Deactivated locks them out on their very
+  // next render, with no need to wait for a fresh login.
+  if (user.accountStatus && user.accountStatus !== "Active") {
+    const STATUS_COPY = {
+      "Pending Approval": {
+        heading: "Account Pending Approval",
+        body: "Your account has been created and is awaiting administrator review. " +
+              "You will gain access once an administrator approves your registration and assigns your role.",
+        tone: "pending",
+      },
+      "Suspended": {
+        heading: "Account Suspended",
+        body: "Your access has been temporarily suspended by an administrator. " +
+              "Contact your administrator if you believe this is in error.",
+        tone: "blocked",
+      },
+      "Deactivated": {
+        heading: "Account Deactivated",
+        body: "This account has been deactivated and no longer has access to the platform. " +
+              "Contact your administrator for assistance.",
+        tone: "blocked",
+      },
+    };
+    const copy = STATUS_COPY[user.accountStatus] || {
+      heading: "Access Restricted",
+      body: "Your account does not currently have access to the platform. Contact your administrator.",
+      tone: "blocked",
+    };
+
+    return (
+      <div className="login-screen">
+        <div className={`login-card status-card status-card--${copy.tone}`} role="main">
+          <div className="login-header">
+            <img src={arimaLogo} alt="ARIMA Resources logo" className="login-logo" />
+            <h1>{copy.heading}</h1>
+          </div>
+          <p className="status-card-body">{copy.body}</p>
+          <p className="status-card-meta">Signed in as <strong>{user.email}</strong></p>
+          <button type="button" className="login-btn" onClick={handleLogout}>
+            Sign Out
+          </button>
         </div>
       </div>
     );

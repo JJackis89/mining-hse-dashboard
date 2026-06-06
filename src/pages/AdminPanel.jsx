@@ -11,17 +11,23 @@ import {
   testFirestoreWrite,
   subscribeToFailedRegistrations,
   approveFailedRegistration,
+  approveUser,
+  suspendUser,
+  deactivateUser,
+  reactivateUser,
+  deleteUserProfile,
 } from "../services/adminService";
 import { ROLES, ROLE_LABELS, ROUTE_ACCESS, NAV_ITEMS } from "../utils/permissions";
 
 const PAGE_SIZE      = 20;
-const STATUS_OPTIONS = ["Active", "Pending Approval", "Disabled"];
+const STATUS_OPTIONS = ["Active", "Pending Approval", "Suspended", "Deactivated"];
 
 // Maps accountStatus to a short CSS key used in className
 const STATUS_KEY = {
   "Active":           "active",
   "Pending Approval": "pending",
-  "Disabled":         "disabled",
+  "Suspended":        "suspended",
+  "Deactivated":      "deactivated",
 };
 
 function tsMs(val) {
@@ -124,6 +130,8 @@ function AdminPanel() {
   const [pendingChanges, setPendingChanges] = useState({});
   const [saving, setSaving]                 = useState({});
   const [saveMsg, setSaveMsg]               = useState({});
+  const [lifecycleBusy, setLifecycleBusy]   = useState({});
+  const [lifecycleMsg, setLifecycleMsg]     = useState({});
 
   // ── Search, Filter & Sort ───────────────────────────────────
   const [search, setSearch]             = useState("");
@@ -296,6 +304,36 @@ function AdminPanel() {
       setSaving((s) => { const n = { ...s }; delete n[uid]; return n; });
     }
   };
+
+  // ── User lifecycle (approve / suspend / deactivate / reactivate / delete) ──
+  const LIFECYCLE_CONFIRM = {
+    suspend:    (u) => `Suspend ${u.fullName || u.email}? They will be signed out of the platform immediately and cannot sign back in until reactivated.`,
+    deactivate: (u) => `Deactivate ${u.fullName || u.email}? This is a longer-term block — they will be signed out immediately and cannot sign back in until reactivated.`,
+    reactivate: (u) => `Restore ${u.fullName || u.email} to Active? They will regain access immediately.`,
+    delete:     (u) => `Permanently remove ${u.fullName || u.email} from the platform user list?\n\nThis deletes their platform profile only — Firebase Authentication records can only be removed from the Firebase Console (Authentication → Users), which a browser app cannot do. If this person can still sign in, they will reappear as a new "Pending Approval" account on next login and require re-approval.`,
+  };
+
+  const runLifecycleAction = async (u, action, fn, successText) => {
+    const confirmMsg = LIFECYCLE_CONFIRM[action]?.(u);
+    if (confirmMsg && !window.confirm(confirmMsg)) return;
+    setLifecycleBusy((b) => ({ ...b, [u.id]: action }));
+    setLifecycleMsg((m) => { const n = { ...m }; delete n[u.id]; return n; });
+    try {
+      await fn();
+      setLifecycleMsg((m) => ({ ...m, [u.id]: { ok: true, text: successText } }));
+      setTimeout(() => setLifecycleMsg((m) => { const n = { ...m }; delete n[u.id]; return n; }), 3000);
+    } catch (err) {
+      setLifecycleMsg((m) => ({ ...m, [u.id]: { ok: false, text: err.message || "Action failed" } }));
+    } finally {
+      setLifecycleBusy((b) => { const n = { ...b }; delete n[u.id]; return n; });
+    }
+  };
+
+  const handleApprove    = (u) => runLifecycleAction(u, "approve",    () => approveUser(u.id, u.role || "viewer"), "Approved — account is now Active");
+  const handleSuspend    = (u) => runLifecycleAction(u, "suspend",    () => suspendUser(u.id),                     "Suspended");
+  const handleDeactivate = (u) => runLifecycleAction(u, "deactivate", () => deactivateUser(u.id),                  "Deactivated");
+  const handleReactivate = (u) => runLifecycleAction(u, "reactivate", () => reactivateUser(u.id),                  "Restored to Active");
+  const handleDelete     = (u) => runLifecycleAction(u, "delete",     () => deleteUserProfile(u.id),               "Removed from platform");
 
   // ── Invites ──────────────────────────────────────────────────
   const handleInvite = async (e) => {
@@ -646,17 +684,76 @@ function AdminPanel() {
                                 Cannot edit own account
                               </span>
                             ) : (
-                              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                <button
-                                  className="admin-save-btn"
-                                  onClick={() => handleSave(u.id)}
-                                  disabled={!isDirty || saving[u.id]}
-                                >
-                                  {saving[u.id] ? "Saving…" : "Save"}
-                                </button>
-                                {msg && (
-                                  <span className={`admin-save-msg ${msg === "ok" ? "admin-save-msg--ok" : "admin-save-msg--err"}`}>
-                                    {msg === "ok" ? "Saved" : "Error"}
+                              <div className="admin-actions-cell">
+                                <div className="admin-actions-row">
+                                  <button
+                                    className="admin-save-btn"
+                                    onClick={() => handleSave(u.id)}
+                                    disabled={!isDirty || saving[u.id]}
+                                  >
+                                    {saving[u.id] ? "Saving…" : "Save"}
+                                  </button>
+                                  {msg && (
+                                    <span className={`admin-save-msg ${msg === "ok" ? "admin-save-msg--ok" : "admin-save-msg--err"}`}>
+                                      {msg === "ok" ? "Saved" : "Error"}
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="admin-actions-row">
+                                  {displayStatus === "Pending Approval" && (
+                                    <button
+                                      className="admin-approve-btn"
+                                      onClick={() => handleApprove(u)}
+                                      disabled={!!lifecycleBusy[u.id]}
+                                      title={`Approve and activate as ${ROLE_LABELS[u.role || "viewer"]}`}
+                                    >
+                                      {lifecycleBusy[u.id] === "approve" ? "Approving…" : "Approve"}
+                                    </button>
+                                  )}
+                                  {displayStatus === "Active" && (
+                                    <>
+                                      <button
+                                        className="admin-revoke-btn"
+                                        onClick={() => handleSuspend(u)}
+                                        disabled={!!lifecycleBusy[u.id]}
+                                        title="Temporarily block sign-in"
+                                      >
+                                        {lifecycleBusy[u.id] === "suspend" ? "Suspending…" : "Suspend"}
+                                      </button>
+                                      <button
+                                        className="admin-revoke-btn"
+                                        onClick={() => handleDeactivate(u)}
+                                        disabled={!!lifecycleBusy[u.id]}
+                                        title="Longer-term block on sign-in"
+                                      >
+                                        {lifecycleBusy[u.id] === "deactivate" ? "Deactivating…" : "Deactivate"}
+                                      </button>
+                                    </>
+                                  )}
+                                  {(displayStatus === "Suspended" || displayStatus === "Deactivated") && (
+                                    <button
+                                      className="admin-approve-btn"
+                                      onClick={() => handleReactivate(u)}
+                                      disabled={!!lifecycleBusy[u.id]}
+                                      title="Restore access immediately"
+                                    >
+                                      {lifecycleBusy[u.id] === "reactivate" ? "Restoring…" : "Reactivate"}
+                                    </button>
+                                  )}
+                                  <button
+                                    className="admin-revoke-btn"
+                                    onClick={() => handleDelete(u)}
+                                    disabled={!!lifecycleBusy[u.id]}
+                                    title="Remove their platform profile"
+                                  >
+                                    {lifecycleBusy[u.id] === "delete" ? "Removing…" : "Delete"}
+                                  </button>
+                                </div>
+
+                                {lifecycleMsg[u.id] && (
+                                  <span className={`admin-save-msg ${lifecycleMsg[u.id].ok ? "admin-save-msg--ok" : "admin-save-msg--err"}`}>
+                                    {lifecycleMsg[u.id].text}
                                   </span>
                                 )}
                               </div>

@@ -10,23 +10,105 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data.role == 'admin';
     }
 
+    // Bootstrap allow-list — mirrors VITE_FIRST_ADMIN_EMAIL, but enforced
+    // server-side where a client can never read or rewrite it. This is the
+    // ONLY path through which a brand-new account may create its own profile
+    // with role:'admin'; every other self-created profile is forced to
+    // role:'viewer' / accountStatus:'Pending Approval' by the create rule below.
+    function isDesignatedAdminEmail() {
+      return request.auth != null && request.auth.token.email != null
+        && request.auth.token.email.lower() in [
+          'justice.jackis89@gmail.com',
+          'juejack1@gmail.com'
+        ];
+    }
+
+    // True when an admin pre-assigned `role` to the requester's email via
+    // Admin Panel → Invite Users (pendingRoles/{email}) before they signed
+    // up. The Invite UI only ever offers non-admin roles and pendingRoles
+    // create/update is admin-gated, but `role != 'admin'` is kept here as
+    // the final, authoritative guard — this function is the one thing that
+    // lets a self-registration land with anything other than role:'viewer',
+    // so it must never be able to hand out admin under any circumstance.
+    function hasPreAssignedRole(role) {
+      return role != 'admin'
+        && request.auth.token.email != null
+        && exists(/databases/$(database)/documents/pendingRoles/$(request.auth.token.email))
+        && get(/databases/$(database)/documents/pendingRoles/$(request.auth.token.email)).data.role == role;
+    }
+
+    // True when `field` is left exactly as-is by this write, OR is being
+    // added for the first time with exactly `safeDefault`. The second branch
+    // covers userRoles documents written before role/accountStatus existed —
+    // comparing directly against a missing map key throws in rules, and a
+    // self-write must still be unable to backfill the field to anything other
+    // than the safe default (e.g. can't "discover" their doc has no status
+    // and set it to 'Active' themselves).
+    function fieldUnchangedOrBackfilled(data, field, safeDefault) {
+      return (field in data && request.resource.data[field] == data[field])
+          || (!(field in data) && request.resource.data[field] == safeDefault);
+    }
+
     // ── userRoles ────────────────────────────────────────────────
-    // Each authenticated user can read and write their own profile document.
-    // This is required for first-time sign-up to create the profile, and for
-    // lastLogin updates on every subsequent sign-in.
-    // Admins can read and write any user's document (role changes, repairs).
+    // Single source of truth for role + account status. Field-level checks
+    // below are the actual enforcement point for "no self-promotion": a user
+    // may create and refresh their own profile, but can NEVER write a role or
+    // accountStatus value through their own session — only an admin can.
     match /userRoles/{userId} {
-      allow read:  if request.auth != null && (request.auth.uid == userId || isAdmin());
-      allow write: if request.auth != null && (request.auth.uid == userId || isAdmin());
+      allow read: if request.auth != null && (request.auth.uid == userId || isAdmin());
+
+      // First-time profile creation. This is the actual server-side fix for
+      // "new users receiving admin by default": a self-registering account
+      // (request.auth.uid == userId) is FORCED into accountStatus:
+      // 'Pending Approval' with role:'viewer' — UNLESS an admin pre-assigned
+      // a (non-admin) role for that email via Invite Users, in which case
+      // the pre-assigned role is honored but the account still lands in
+      // Pending Approval and still requires explicit admin approval. The
+      // sole exception is the allow-listed bootstrap path for the designated
+      // admin email(s), which must request exactly role:'admin' / status:
+      // 'Active'. No client-supplied value can produce role:'admin' through
+      // any other route. Admins may additionally create a profile for a
+      // DIFFERENT uid — this is the Diagnostics → "Approve failed
+      // registration" recovery flow, where the admin writes the stuck
+      // account's document on its behalf.
+      allow create: if request.auth != null && (
+        isAdmin()
+        || (request.auth.uid == userId
+            && request.resource.data.accountStatus == 'Pending Approval'
+            && (
+              request.resource.data.role == 'viewer'
+              || hasPreAssignedRole(request.resource.data.role)
+            )
+           )
+        || (request.auth.uid == userId
+            && isDesignatedAdminEmail()
+            && request.resource.data.role == 'admin'
+            && request.resource.data.accountStatus == 'Active')
+      );
+
+      // A user may keep their own profile fresh (lastLogin, name, dept, rank)
+      // but role and accountStatus must be unchanged — any attempt to alter
+      // either is rejected unless the writer is an admin. fieldUnchangedOr
+      // Backfilled() also covers legacy docs predating these fields (the
+      // syncLegacyUsers backfill adds accountStatus:'Active' on first touch);
+      // comparing straight against a missing key would throw and deny the
+      // write outright, breaking lastLogin updates for those accounts.
+      allow update: if isAdmin()
+        || (request.auth != null && request.auth.uid == userId
+            && fieldUnchangedOrBackfilled(resource.data, 'role', 'viewer')
+            && fieldUnchangedOrBackfilled(resource.data, 'accountStatus', 'Active'));
+
+      allow delete: if isAdmin();
     }
 
     // ── pendingRoles ─────────────────────────────────────────────
     // Admin-pre-assigned roles keyed by email address.
-    // Users can read the doc matching their own email (consumed during sign-in).
-    // Only admins may write (create / update / delete pre-assignments).
+    // Users can read the doc matching their own email (consumed during sign-in)
+    // and delete it once claimed. Only admins may create/update pre-assignments.
     match /pendingRoles/{email} {
-      allow read:  if request.auth != null && (request.auth.token.email == email || isAdmin());
-      allow write: if isAdmin();
+      allow read:          if request.auth != null && (request.auth.token.email == email || isAdmin());
+      allow create, update: if isAdmin();
+      allow delete:        if request.auth != null && (request.auth.token.email == email || isAdmin());
     }
 
     // ── failedRegistrations ──────────────────────────────────────
@@ -81,9 +163,11 @@ service cloud.firestore {
 
     // ── _diagnostics ─────────────────────────────────────────────
     // Temporary write-test documents created by the Admin Panel Diagnostics tab.
-    // Any authenticated user may read, write, and delete.
+    // Admin-only — this collection previously allowed any authenticated user
+    // to read/write/delete arbitrary docs here, which let any signed-in
+    // account probe or tamper with another user's diagnostic test records.
     match /_diagnostics/{docId} {
-      allow read, write, delete: if request.auth != null;
+      allow read, write, delete: if isAdmin();
     }
   }
 }

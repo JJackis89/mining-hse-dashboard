@@ -125,6 +125,26 @@
 .admin-revoke-btn:hover    { background: rgba(192,57,43,0.16); }
 .admin-revoke-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
+.admin-approve-btn {
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: inherit;
+  background: rgba(30,158,82,0.08);
+  color: var(--success);
+  border: 1px solid rgba(30,158,82,0.25);
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+.admin-approve-btn:hover    { background: rgba(30,158,82,0.16); }
+.admin-approve-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* User-row lifecycle action cell — Save row, then status-action row, then status message */
+.admin-actions-cell { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.admin-actions-row  { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
 .admin-role-pill {
   display: inline-block;
   font-size: 11px;
@@ -276,9 +296,10 @@
   height: 8px;
   border-radius: 50%;
 }
-.admin-status-dot--active   { background: var(--success); }
-.admin-status-dot--pending  { background: var(--warning); }
-.admin-status-dot--disabled { background: var(--danger); }
+.admin-status-dot--active      { background: var(--success); }
+.admin-status-dot--pending     { background: var(--warning); }
+.admin-status-dot--suspended   { background: var(--accent-orange); }
+.admin-status-dot--deactivated { background: var(--danger); }
 
 /* ── Sortable Column Headers ─────────────────────────────────── */
 .admin-sort-th {

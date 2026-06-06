@@ -4,7 +4,7 @@ export const ROLE_LABELS = {
   admin:       "Administrator",
   supervisor:  "Supervisor",
   storekeeper: "Storekeeper",
-  viewer:      "Viewer",
+  viewer:      "Officer",
 };
 
 // Pages each role can access

@@ -73,6 +73,59 @@ export async function updateUserProfile(uid, data) {
   await setDoc(doc(db, "userRoles", uid), data, { merge: true });
 }
 
+// ── User lifecycle (status transitions + profile removal) ─────
+//
+// All status writes are merge-only field updates — the Firestore rules are
+// the actual enforcement boundary (only an admin's session can change role
+// or accountStatus on someone else's document; see firestore.rules). The
+// live watchOwnProfile() subscription in App.jsx pushes every change here
+// to the affected session immediately, which is what makes "permission
+// changes take effect immediately" / "force session refresh" true without
+// a logout — the account-status gate screen appears the instant the write
+// lands, and the user signs themselves out from there.
+
+/** Approve a pending registration: assign its role and activate the account. */
+export async function approveUser(uid, role = "viewer") {
+  await setDoc(doc(db, "userRoles", uid), { role, accountStatus: "Active" }, { merge: true });
+}
+
+/** Temporarily block sign-in (e.g. while investigating) without losing the profile or role. */
+export async function suspendUser(uid) {
+  await setDoc(doc(db, "userRoles", uid), { accountStatus: "Suspended" }, { merge: true });
+}
+
+/** Longer-term block — keeps the record for audit but treats the account as retired. */
+export async function deactivateUser(uid) {
+  await setDoc(doc(db, "userRoles", uid), { accountStatus: "Deactivated" }, { merge: true });
+}
+
+/** Restore a Suspended or Deactivated account to Active. */
+export async function reactivateUser(uid) {
+  await setDoc(doc(db, "userRoles", uid), { accountStatus: "Active" }, { merge: true });
+}
+
+/**
+ * Remove a user's platform profile entirely.
+ *
+ * Firebase Authentication records can only be deleted with the Admin SDK
+ * (a Cloud Function or server with service-account credentials) — there is
+ * no client API for an app to delete another user's auth record, no matter
+ * who is signed in. This removes the Firestore-side record only, which is
+ * the correct fix for "deleted-from-Auth users still appear in the platform
+ * list" (the orphaned document is what was actually showing up).
+ *
+ * If the person can still authenticate, deleting just this document is still
+ * safe: App.jsx treats a signed-in uid with no userRoles doc as a brand-new
+ * registration, so they reappear (same uid) as a fresh role:'viewer' /
+ * accountStatus:'Pending Approval' record and must be approved again — they
+ * are never re-admitted automatically. To fully retire someone who can still
+ * sign in, remove them from Firebase Console → Authentication → Users first
+ * (or use Suspend/Deactivate, which blocks access without touching Auth).
+ */
+export async function deleteUserProfile(uid) {
+  await deleteDoc(doc(db, "userRoles", uid));
+}
+
 // ── Pending invites ───────────────────────────────────────────
 
 export async function getPendingInvites() {
