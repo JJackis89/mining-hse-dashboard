@@ -22,7 +22,6 @@ import arimaLogo from "./assets/arima-logo.png";
 import Sidebar from "./components/Sidebar";
 import Header from "./components/Header";
 
-const Dashboard      = lazy(() => import("./pages/Dashboard"));
 const MapViewer      = lazy(() => import("./pages/MapViewer"));
 const Inventory      = lazy(() => import("./pages/Inventory"));
 const DroneSurveyOps = lazy(() => import("./pages/DroneSurveyOps"));
@@ -98,7 +97,15 @@ function PageLoader() {
 function GuardedRoute({ path, children }) {
   const user = useUser();
   if (!user || !canAccess(user.role, path)) {
-    return <Navigate to="/" replace />;
+    return (
+      <div className="access-denied-state">
+        <p className="access-denied-title">Access Restricted</p>
+        <p className="access-denied-body">
+          You do not have permission to view this page.
+          Contact your administrator to request access.
+        </p>
+      </div>
+    );
   }
   return children;
 }
@@ -472,7 +479,7 @@ function App() {
           <main className="app-content">
             <Suspense fallback={<PageLoader />}>
               <Routes>
-                <Route path="/" element={<Dashboard />} />
+                <Route path="/" element={<Navigate to="/inventory" replace />} />
 
                 <Route
                   path="/map"
@@ -515,8 +522,7 @@ function App() {
                   }
                 />
 
-                {/* Fallback: redirect unknown paths to dashboard */}
-                <Route path="*" element={<Navigate to="/" replace />} />
+                <Route path="*" element={<Navigate to="/inventory" replace />} />
               </Routes>
             </Suspense>
           </main>
