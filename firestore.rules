@@ -60,6 +60,35 @@ service cloud.firestore {
              in ['admin', 'storekeeper'];
     }
 
+    // ── droneActivities ──────────────────────────────────────────
+    // Activity records created by supervisors and admins.
+    // All authenticated users can read.
+    // Admins can write any record.
+    // Supervisors can create new records and update/delete records they created.
+    match /droneActivities/{activityId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null &&
+        get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data.role
+          in ['admin', 'supervisor'];
+      allow update, delete: if request.auth != null && (
+        get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data.role == 'admin' ||
+        (get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data.role == 'supervisor' &&
+         resource.data.createdByUid == request.auth.uid)
+      );
+    }
+
+    // ── droneActivityLogs ─────────────────────────────────────────
+    // Immutable audit trail — only append, never edit or delete.
+    // Any authenticated user can read (for detail/history view).
+    // Admins and supervisors can create log entries (written server-side by the app).
+    match /droneActivityLogs/{logId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null &&
+        get(/databases/$(database)/documents/userRoles/$(request.auth.uid)).data.role
+          in ['admin', 'supervisor'];
+      allow update, delete: if false;
+    }
+
     // ── _diagnostics ─────────────────────────────────────────────
     // Temporary write-test documents created by the Admin Panel Diagnostics tab.
     // Any authenticated user may read, write, and delete.
