@@ -27,10 +27,10 @@ export function canAccess(role, path) {
 
 // All nav items (Sidebar uses this and filters by role)
 export const NAV_ITEMS = [
-  { path: "/",           label: "Dashboard",          icon: "▦" },
-  { path: "/map",        label: "Map Viewer",         icon: "🗺" },
-  { path: "/inventory",  label: "Inventory",          icon: "📦" },
-  { path: "/operations", label: "Drone & Survey Ops", icon: "🛩" },
-  { path: "/schedule",   label: "Work Schedule",      icon: "📊" },
-  { path: "/admin",      label: "Admin Panel",        icon: "⚙" },
+  { path: "/",           label: "Dashboard",          icon: "grid"     },
+  { path: "/map",        label: "Map Viewer",         icon: "map"      },
+  { path: "/inventory",  label: "Inventory",          icon: "box"      },
+  { path: "/operations", label: "Drone & Survey Ops", icon: "target"   },
+  { path: "/schedule",   label: "Work Schedule",      icon: "chart"    },
+  { path: "/admin",      label: "Admin Panel",        icon: "settings" },
 ];

@@ -470,9 +470,9 @@ function ActivityDetailModal({ activity, user, canManage, onClose, onEdit, onDel
                     {activity.attachments.map((att, i) => (
                       att.url
                         ? <a key={i} href={att.url} target="_blank" rel="noopener noreferrer" className="dso-attachment-link">
-                            &#128206; {att.name || att.url}
+                            {att.name || att.url}
                           </a>
-                        : <span key={i} className="dso-attachment-name-text">&#128206; {att.name}</span>
+                        : <span key={i} className="dso-attachment-name-text">{att.name}</span>
                     ))}
                   </div>
                 </div>
@@ -551,7 +551,6 @@ function DeleteConfirmModal({ activity, deleting, onClose, onConfirm }) {
       role="dialog" aria-modal="true" aria-label="Confirm delete">
       <div className="photo-modal dso-delete-modal" onClick={(e) => e.stopPropagation()}>
         <div className="dso-delete-body">
-          <div className="dso-delete-icon" aria-hidden="true">&#128465;</div>
           <h3 className="dso-delete-title">Delete Activity?</h3>
           <p className="dso-delete-msg">
             <strong>{activity.activityName}</strong> ({activity.activityId}) will be archived
@@ -924,7 +923,6 @@ function Survey123Feed({ submissions, loading }) {
   if (submissions === null) {
     return (
       <div className="s123-connect-panel">
-        <div className="s123-connect-icon" aria-hidden="true">📋</div>
         <h3 className="s123-connect-title">Survey123 Form Not Yet Connected</h3>
         <p className="s123-connect-body">
           Once you have published your Drone &amp; Survey Operations form in ArcGIS Online,
