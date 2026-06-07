@@ -143,6 +143,63 @@ export const getSeniorCamp = () =>
 export const getGarlandPath = () =>
   queryFeatures(`${BASE_WFL}/${LAYERS.GARLAND_PATH}`, { outFields: "Id,Length,Shape__Length" });
 
+// ─── Write helpers (applyEdits) ─────────────────────────────────
+// Shared attribute builder so add and update send identical field sets.
+function receiptAttributes(r) {
+  return {
+    date_time_received: r.date_time_received,
+    material_name:      r.material_name,
+    field_19:           r.material_name,
+    category:           r.category,
+    field_15:           r.category,
+    unit:               r.unit,
+    field_16:           r.unit,
+    quantity_received:  r.quantity_received,
+    received_by:        r.received_by,
+    supplier:           r.supplier,
+    remarks:            r.remarks,
+  };
+}
+
+async function applyEdits(payload) {
+  const params = new URLSearchParams({ f: "json", ...payload });
+  const res = await resilientFetch(`${MATERIALS_URL}/applyEdits`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: params,
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message || "ArcGIS applyEdits failed");
+  return data;
+}
+
+// ─── Write: add / update / delete receipt features ───────────────
+// Anonymous creates are enabled (Path 1). Update/delete require auth
+// and will fail until allowAnonymousToUpdate/Delete is enabled in
+// ArcGIS Online — callers handle the error and update syncStatus.
+
+export async function addReceiptToArcGIS(receipt) {
+  const data = await applyEdits({ adds: JSON.stringify([{ attributes: receiptAttributes(receipt) }]) });
+  const result = data.addResults?.[0];
+  if (!result?.success) throw new Error(result?.error?.description || "Feature add failed");
+  return result.objectId;
+}
+
+export async function updateReceiptInArcGIS(objectId, receipt) {
+  const data = await applyEdits({
+    updates: JSON.stringify([{ attributes: { objectid: objectId, ...receiptAttributes(receipt) } }]),
+  });
+  const result = data.updateResults?.[0];
+  if (!result?.success) throw new Error(result?.error?.description || "Feature update failed");
+  return result.objectId;
+}
+
+export async function deleteReceiptFromArcGIS(objectId) {
+  const data = await applyEdits({ deletes: String(objectId) });
+  const result = data.deleteResults?.[0];
+  if (!result?.success) throw new Error(result?.error?.description || "Feature delete failed");
+}
+
 // ─── Materials Receipt (Survey123) ───────────────────────────
 // Module-level session cache — avoids re-fetching the full ArcGIS layer
 // on every page visit or tab switch.  5-minute TTL keeps data reasonably fresh.

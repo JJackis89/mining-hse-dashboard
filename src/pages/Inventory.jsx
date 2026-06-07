@@ -3,6 +3,8 @@ import { getMaterials, getMaterialAttachments } from "../services/arcgisService"
 import {
   addIssuance, getIssuances,
   getIssuanceTotals, generateIssueRef, getOrCreateInventoryItem,
+  getManualReceipts, addManualReceipt, updateManualReceipt, deleteManualReceipt,
+  retrySyncReceipt, addAdjustment, getAdjustments,
 } from "../services/issuanceService";
 import { exportToCsv } from "../utils/exportCsv";
 import { useUser } from "../context/UserContext";
@@ -470,6 +472,462 @@ function IssuanceModal({ prefill, allRecords, allTotals, user, onClose, onSucces
   );
 }
 
+// ─── Receipt Modal (add + edit) ───────────────────────────────
+// Pass `editRecord` to enter edit mode; omit for add mode.
+function ReceiptModal({ user, editRecord, onClose, onSuccess }) {
+  const isEdit = !!editRecord;
+
+  const [form, setForm] = useState({
+    material_name:     editRecord?.material_name     || "",
+    category:          editRecord?.category          || "",
+    quantity_received: editRecord?.quantity_received || "",
+    unit:              editRecord?.unit              || "",
+    supplier:          editRecord?.supplier          || "",
+    received_by:       editRecord?.received_by       || "",
+    date: editRecord?.date_time_received
+      ? new Date(editRecord.date_time_received).toISOString().split("T")[0]
+      : todayISO(),
+    remarks: editRecord?.remarks || "",
+  });
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError]           = useState("");
+
+  useEffect(() => {
+    const h = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [onClose]);
+
+  const set = (f) => (e) => setForm((prev) => ({ ...prev, [f]: e.target.value }));
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!form.material_name.trim()) { setError("Material name is required."); return; }
+    const qty = Number(form.quantity_received);
+    if (!qty || qty <= 0)           { setError("Quantity must be greater than 0."); return; }
+    if (!form.date)                 { setError("Date received is required."); return; }
+
+    setSubmitting(true);
+    setError("");
+    const payload = {
+      material_name:      form.material_name.trim(),
+      category:           form.category.trim(),
+      quantity_received:  qty,
+      unit:               form.unit.trim(),
+      supplier:           form.supplier.trim(),
+      received_by:        form.received_by.trim() || user.email,
+      date_time_received: new Date(form.date).getTime(),
+      remarks:            form.remarks.trim(),
+    };
+    try {
+      if (isEdit) {
+        await updateManualReceipt(editRecord.firestoreId, payload, editRecord.arcgisObjectId);
+      } else {
+        await addManualReceipt({ ...payload, addedByEmail: user.email });
+      }
+      onSuccess(payload.material_name);
+    } catch {
+      setError("Failed to save receipt. Please try again.");
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="photo-modal-overlay" onClick={onClose} role="dialog" aria-modal="true" aria-label={isEdit ? "Edit receipt" : "Add receipt"}>
+      <div className="photo-modal issuance-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="photo-modal-header">
+          <div>
+            <span className="photo-modal-title">{isEdit ? "Edit Receipt" : "Add Receipt"}</span>
+            <span className="photo-modal-sub">{isEdit ? "Update receipt details" : "Record goods received into inventory"}</span>
+          </div>
+          <button className="photo-modal-close" onClick={onClose} aria-label="Close">&#x2715;</button>
+        </div>
+
+        <div className="photo-modal-body">
+          {error && <div className="issuance-error" role="alert">{error}</div>}
+
+          <form onSubmit={handleSubmit} className="issuance-form" noValidate>
+            <p className="issuance-section-title">Item Details</p>
+
+            <div className="issuance-field" style={{ marginBottom: 14 }}>
+              <label>Material Name <span className="issuance-required">*</span></label>
+              <input type="text" value={form.material_name} onChange={set("material_name")}
+                className="issuance-input" placeholder="e.g. Cement Bags" required />
+            </div>
+
+            <div className="issuance-form-grid">
+              <div className="issuance-field">
+                <label>Category</label>
+                <input type="text" value={form.category} onChange={set("category")}
+                  className="issuance-input" placeholder="e.g. Building Materials" />
+              </div>
+              <div className="issuance-field">
+                <label>Unit</label>
+                <input type="text" value={form.unit} onChange={set("unit")}
+                  className="issuance-input" placeholder="e.g. bags, kg, pcs" />
+              </div>
+            </div>
+
+            <div className="issuance-section-divider" />
+            <p className="issuance-section-title">Receipt Details</p>
+
+            <div className="issuance-form-grid">
+              <div className="issuance-field">
+                <label>Quantity Received <span className="issuance-required">*</span></label>
+                <input type="number" value={form.quantity_received} onChange={set("quantity_received")}
+                  min="0.01" step="any" className="issuance-input" placeholder="0" required />
+              </div>
+              <div className="issuance-field">
+                <label>Date Received <span className="issuance-required">*</span></label>
+                <input type="date" value={form.date} onChange={set("date")}
+                  className="issuance-input" required />
+              </div>
+              <div className="issuance-field">
+                <label>Supplier</label>
+                <input type="text" value={form.supplier} onChange={set("supplier")}
+                  className="issuance-input" placeholder="Supplier name" />
+              </div>
+              <div className="issuance-field">
+                <label>Received By</label>
+                <input type="text" value={form.received_by} onChange={set("received_by")}
+                  className="issuance-input" placeholder={user.email} />
+              </div>
+            </div>
+
+            <div className="issuance-field" style={{ marginTop: 12 }}>
+              <label>Remarks</label>
+              <textarea value={form.remarks} onChange={set("remarks")}
+                rows={2} className="issuance-textarea" placeholder="Additional notes (optional)" />
+            </div>
+
+            <div className="issuance-form-footer">
+              <span className="issuance-by-label">
+                {isEdit ? "Edited" : "Added"} by: <strong>{user.email}</strong>
+              </span>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button type="button" className="issuance-cancel-btn" onClick={onClose} disabled={submitting}>Cancel</button>
+                <button type="submit" className="issuance-submit-btn" disabled={submitting}>
+                  {submitting ? "Saving…" : isEdit ? "Save Changes" : "Add Receipt"}
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Delete Confirm Modal ─────────────────────────────────────
+function DeleteConfirmModal({ record, onConfirm, onCancel, deleting }) {
+  useEffect(() => {
+    const h = (e) => { if (e.key === "Escape") onCancel(); };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [onCancel]);
+
+  return (
+    <div className="photo-modal-overlay" onClick={onCancel} role="dialog" aria-modal="true" aria-label="Confirm delete">
+      <div className="photo-modal" style={{ maxWidth: 420 }} onClick={(e) => e.stopPropagation()}>
+        <div className="photo-modal-header">
+          <span className="photo-modal-title">Delete Receipt</span>
+          <button className="photo-modal-close" onClick={onCancel} aria-label="Close">&#x2715;</button>
+        </div>
+        <div className="photo-modal-body" style={{ padding: "20px 24px" }}>
+          <p style={{ marginBottom: 8 }}>
+            Remove <strong>{record.material_name}</strong> ({record.quantity_received} {record.unit}) from inventory?
+          </p>
+          {record.arcgisObjectId && (
+            <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12 }}>
+              This record was synced to ArcGIS (objectid: {record.arcgisObjectId}). It will be removed from the platform. If the ArcGIS delete fails due to permissions, you may need to remove it manually in ArcGIS Online.
+            </p>
+          )}
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <button className="issuance-cancel-btn" onClick={onCancel} disabled={deleting}>Cancel</button>
+            <button
+              className="issuance-submit-btn"
+              style={{ background: "#dc3545", borderColor: "#dc3545" }}
+              onClick={onConfirm}
+              disabled={deleting}
+            >
+              {deleting ? "Deleting…" : "Delete"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Adjustment Modal ─────────────────────────────────────────
+const ADJUSTMENT_TYPES = ["Correction (Add)", "Transfer In", "Write-off", "Transfer Out"];
+const ADJ_ADDS = new Set(["Correction (Add)", "Transfer In"]);
+
+function AddAdjustmentModal({ allRecords, user, onClose, onSuccess }) {
+  const materialOptions = useMemo(() => {
+    const seen = new Set();
+    return allRecords
+      .filter((r) => r.material_name && !seen.has(r.material_name) && seen.add(r.material_name))
+      .map((r) => ({ material_name: r.material_name, category: r.category || "", unit: r.unit || "" }))
+      .sort((a, b) => a.material_name.localeCompare(b.material_name));
+  }, [allRecords]);
+
+  const [form, setForm] = useState({
+    materialName:   "",
+    adjustmentType: ADJUSTMENT_TYPES[0],
+    quantity:       "",
+    reason:         "",
+    date:           todayISO(),
+  });
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError]           = useState("");
+
+  useEffect(() => {
+    const h = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [onClose]);
+
+  const set = (f) => (e) => setForm((prev) => ({ ...prev, [f]: e.target.value }));
+  const selected = materialOptions.find((m) => m.material_name === form.materialName);
+  const isAdd    = ADJ_ADDS.has(form.adjustmentType);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!form.materialName)    { setError("Select a material."); return; }
+    const qty = Number(form.quantity);
+    if (!qty || qty <= 0)      { setError("Quantity must be greater than 0."); return; }
+
+    setSubmitting(true);
+    setError("");
+    try {
+      await addAdjustment({
+        materialName:    form.materialName,
+        category:        selected?.category || "",
+        unit:            selected?.unit     || "",
+        adjustmentType:  form.adjustmentType,
+        quantity:        qty,
+        reason:          form.reason.trim(),
+        date:            form.date,
+        adjustedByEmail: user.email,
+      });
+      onSuccess(form.materialName);
+    } catch {
+      setError("Failed to save adjustment. Please try again.");
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="photo-modal-overlay" onClick={onClose} role="dialog" aria-modal="true" aria-label="Stock adjustment">
+      <div className="photo-modal issuance-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="photo-modal-header">
+          <div>
+            <span className="photo-modal-title">Stock Adjustment</span>
+            <span className="photo-modal-sub">Corrections, write-offs, and transfers</span>
+          </div>
+          <button className="photo-modal-close" onClick={onClose} aria-label="Close">&#x2715;</button>
+        </div>
+        <div className="photo-modal-body">
+          {error && <div className="issuance-error" role="alert">{error}</div>}
+          <form onSubmit={handleSubmit} className="issuance-form" noValidate>
+            <p className="issuance-section-title">Adjustment Details</p>
+            <div className="issuance-field" style={{ marginBottom: 14 }}>
+              <label>Material <span className="issuance-required">*</span></label>
+              <select className="issuance-item-select" value={form.materialName}
+                onChange={set("materialName")} required>
+                <option value="">— Select a material —</option>
+                {materialOptions.map((m) => (
+                  <option key={m.material_name} value={m.material_name}>{m.material_name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="issuance-form-grid">
+              <div className="issuance-field">
+                <label>Type <span className="issuance-required">*</span></label>
+                <select className="issuance-item-select" value={form.adjustmentType} onChange={set("adjustmentType")}>
+                  {ADJUSTMENT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </div>
+              <div className="issuance-field">
+                <label>Quantity <span className="issuance-required">*</span></label>
+                <input type="number" value={form.quantity} onChange={set("quantity")}
+                  min="0.01" step="any" className="issuance-input" placeholder="0" required />
+              </div>
+              <div className="issuance-field">
+                <label>Date <span className="issuance-required">*</span></label>
+                <input type="date" value={form.date} onChange={set("date")}
+                  className="issuance-input" required />
+              </div>
+            </div>
+            {selected && (
+              <div style={{ fontSize: 12, color: isAdd ? "#1E9E52" : "#dc3545", marginTop: 4, marginBottom: 12, fontWeight: 600 }}>
+                Effect: {isAdd ? "+" : "−"}{form.quantity || 0} {selected.unit} to stock
+              </div>
+            )}
+            <div className="issuance-field">
+              <label>Reason / Notes</label>
+              <textarea value={form.reason} onChange={set("reason")} rows={2}
+                className="issuance-textarea" placeholder="Reason for adjustment (optional)" />
+            </div>
+            <div className="issuance-form-footer">
+              <span className="issuance-by-label">Adjusted by: <strong>{user.email}</strong></span>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button type="button" className="issuance-cancel-btn" onClick={onClose} disabled={submitting}>Cancel</button>
+                <button type="submit" className="issuance-submit-btn" disabled={submitting}>
+                  {submitting ? "Saving…" : "Save Adjustment"}
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Stock Balance Tab ────────────────────────────────────────
+function StockTab({ records, allTotals, adjustments }) {
+  const [search, setSearch] = useState("");
+
+  const stockData = useMemo(() => {
+    const map = {};
+    records.forEach((r) => {
+      const name = r.material_name;
+      if (!name) return;
+      if (!map[name]) map[name] = { material_name: name, category: r.category || "", unit: r.unit || "", totalReceived: 0, totalIssued: 0, netAdjusted: 0 };
+      map[name].totalReceived += Number(r.quantity_received) || 0;
+      if (!map[name].category && r.category) map[name].category = r.category;
+      if (!map[name].unit     && r.unit)     map[name].unit     = r.unit;
+    });
+    Object.entries(allTotals).forEach(([name, qty]) => {
+      if (map[name]) map[name].totalIssued = qty;
+    });
+    adjustments.forEach((adj) => {
+      const name = adj.materialName;
+      if (!name) return;
+      if (!map[name]) map[name] = { material_name: name, category: adj.category || "", unit: adj.unit || "", totalReceived: 0, totalIssued: 0, netAdjusted: 0 };
+      map[name].netAdjusted += (ADJ_ADDS.has(adj.adjustmentType) ? 1 : -1) * (Number(adj.quantity) || 0);
+    });
+    return Object.values(map)
+      .map((m) => ({ ...m, balance: m.totalReceived + m.netAdjusted - m.totalIssued }))
+      .sort((a, b) => a.material_name.localeCompare(b.material_name));
+  }, [records, allTotals, adjustments]);
+
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase();
+    return q ? stockData.filter((m) => m.material_name.toLowerCase().includes(q) || (m.category || "").toLowerCase().includes(q)) : stockData;
+  }, [stockData, search]);
+
+  return (
+    <>
+      <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-color)" }}>
+        <input className="table-search" placeholder="Search material or category…"
+          value={search} onChange={(e) => setSearch(e.target.value)} aria-label="Search stock" />
+      </div>
+      {filtered.length === 0 ? (
+        <div className="empty-state"><p>No stock data available.</p></div>
+      ) : (
+        <div className="table-scroll" style={{ maxHeight: 520 }}>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th scope="col">Material</th>
+                <th scope="col">Category</th>
+                <th scope="col">Unit</th>
+                <th scope="col">Received</th>
+                <th scope="col">Issued</th>
+                <th scope="col">Adjusted</th>
+                <th scope="col">Balance</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((m) => (
+                <tr key={m.material_name}>
+                  <td className="bold" data-label="Material">{m.material_name}</td>
+                  <td data-label="Category">
+                    {m.category ? <span className="inv-category-badge">{m.category}</span> : "—"}
+                  </td>
+                  <td data-label="Unit">{m.unit || "—"}</td>
+                  <td className="mono" data-label="Received">{m.totalReceived.toLocaleString()}</td>
+                  <td className="mono" data-label="Issued">{m.totalIssued.toLocaleString()}</td>
+                  <td className="mono" data-label="Adjusted"
+                    style={{ color: m.netAdjusted > 0 ? "#1E9E52" : m.netAdjusted < 0 ? "#dc3545" : undefined }}>
+                    {m.netAdjusted > 0 ? `+${m.netAdjusted.toLocaleString()}` : m.netAdjusted.toLocaleString()}
+                  </td>
+                  <td data-label="Balance">
+                    <span className={`issuance-balance-chip ${m.balance <= 0 ? "issuance-balance-chip--zero" : m.balance <= 10 ? "issuance-balance-chip--low" : ""}`}>
+                      {m.balance.toLocaleString()}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ─── Adjustments Panel ────────────────────────────────────────
+function AdjustmentsPanel({ adjustments }) {
+  if (adjustments.length === 0) {
+    return (
+      <div className="empty-state" style={{ padding: "48px 20px" }}>
+        <p>No adjustments recorded.</p>
+        <p className="empty-hint">Use Adjust Stock to record corrections, write-offs, or transfers.</p>
+      </div>
+    );
+  }
+  return (
+    <div className="table-scroll table-mobile-cards" style={{ maxHeight: 520 }}>
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th scope="col">Date</th>
+            <th scope="col">Material</th>
+            <th scope="col">Type</th>
+            <th scope="col">Qty</th>
+            <th scope="col">Unit</th>
+            <th scope="col">Reason</th>
+            <th scope="col">By</th>
+          </tr>
+        </thead>
+        <tbody>
+          {adjustments.map((adj) => {
+            const isAdd = ADJ_ADDS.has(adj.adjustmentType);
+            return (
+              <tr key={adj.id}>
+                <td className="mono" data-label="Date">{adj.date || "—"}</td>
+                <td className="bold" data-label="Material">{adj.materialName || "—"}</td>
+                <td data-label="Type">
+                  <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 7px", borderRadius: 10,
+                    background: isAdd ? "rgba(30,158,82,0.12)" : "rgba(220,53,69,0.12)",
+                    color: isAdd ? "#1E9E52" : "#dc3545" }}>
+                    {adj.adjustmentType || "—"}
+                  </span>
+                </td>
+                <td className="mono" data-label="Qty"
+                  style={{ color: isAdd ? "#1E9E52" : "#dc3545", fontWeight: 600 }}>
+                  {isAdd ? "+" : "−"}{(Number(adj.quantity) || 0).toLocaleString()}
+                </td>
+                <td data-label="Unit">{adj.unit || "—"}</td>
+                <td data-label="Reason" style={{ maxWidth: 200, whiteSpace: "normal", lineHeight: 1.4 }}>
+                  {adj.reason || "—"}
+                </td>
+                <td data-label="By" style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                  {adj.adjustedByEmail || "—"}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // ─── Issuances Tab Content ────────────────────────────────────
 function IssuancesPanel({ refresh }) {
   const [issuances, setIssuances] = useState([]);
@@ -581,15 +1039,20 @@ function IssuancesPanel({ refresh }) {
 
 // ─── Main Page ────────────────────────────────────────────────
 function Inventory() {
-  const user     = useUser();
-  const matrix   = usePermissionMatrix();
-  const canIssue = canPerform(user, matrix, "inventory", "create");
+  const user      = useUser();
+  const matrix    = usePermissionMatrix();
+  const canIssue  = canPerform(user, matrix, "inventory", "create");
+  const canEdit   = canPerform(user, matrix, "inventory", "edit");
+  const canDelete = canPerform(user, matrix, "inventory", "delete");
 
-  const [records, setRecords]           = useState([]);
-  const [allTotals, setAllTotals]       = useState({});
+  const [arcgisRecords, setArcgisRecords]   = useState([]);
+  const [manualRecords, setManualRecords]   = useState([]);
+  const [arcgisRefresh, setArcgisRefresh]   = useState(0);
+  const [manualRefresh, setManualRefresh]   = useState(0);
+  const [allTotals, setAllTotals]           = useState({});
   const [recordsLoading, setRecordsLoading] = useState(true);
   const [totalsLoading, setTotalsLoading]   = useState(true);
-  const [error, setError]               = useState(null);
+  const [error, setError]                   = useState(null);
   const [search, setSearch]           = useState("");
   const [filterCat, setFilterCat]     = useState("All");
   const [photoRecord, setPhotoRecord] = useState(null);
@@ -599,6 +1062,16 @@ function Inventory() {
   const [issuanceTarget, setIssuanceTarget]     = useState(null);
   const [issuanceSuccess, setIssuanceSuccess]   = useState("");
   const [issuancesRefresh, setIssuancesRefresh] = useState(0);
+  const [showAddReceipt, setShowAddReceipt]     = useState(false);
+  const [receiptSuccess, setReceiptSuccess]     = useState("");
+  const [editTarget, setEditTarget]             = useState(null);
+  const [editSuccess, setEditSuccess]           = useState("");
+  const [deleteTarget, setDeleteTarget]         = useState(null);
+  const [deleting, setDeleting]                 = useState(false);
+  const [adjustments, setAdjustments]           = useState([]);
+  const [adjustmentsRefresh, setAdjustmentsRefresh] = useState(0);
+  const [showAddAdjustment, setShowAddAdjustment]   = useState(false);
+  const [adjustmentSuccess, setAdjustmentSuccess]   = useState("");
 
   useEffect(() => {
     if (!issuanceSuccess) return;
@@ -607,28 +1080,64 @@ function Inventory() {
   }, [issuanceSuccess]);
 
   useEffect(() => {
-    let cancelled = false;
+    if (!receiptSuccess) return;
+    const t = setTimeout(() => setReceiptSuccess(""), 5000);
+    return () => clearTimeout(t);
+  }, [receiptSuccess]);
 
-    // ArcGIS fetch — unblocks the table as soon as it resolves.
+  useEffect(() => {
+    if (!editSuccess) return;
+    const t = setTimeout(() => setEditSuccess(""), 5000);
+    return () => clearTimeout(t);
+  }, [editSuccess]);
+
+  useEffect(() => {
+    if (!adjustmentSuccess) return;
+    const t = setTimeout(() => setAdjustmentSuccess(""), 5000);
+    return () => clearTimeout(t);
+  }, [adjustmentSuccess]);
+
+  useEffect(() => {
+    let cancelled = false;
     getMaterials()
       .then((rows) => {
         if (!cancelled) {
-          setRecords(rows.sort((a, b) => (b.date_time_received || 0) - (a.date_time_received || 0)));
+          setArcgisRecords(rows.sort((a, b) => (b.date_time_received || 0) - (a.date_time_received || 0)));
           setRecordsLoading(false);
         }
       })
-      .catch((err) => {
-        if (!cancelled) { setError(err.message); setRecordsLoading(false); }
-      });
+      .catch((err) => { if (!cancelled) { setError(err.message); setRecordsLoading(false); } });
+    return () => { cancelled = true; };
+  }, [arcgisRefresh]);
 
+  useEffect(() => {
+    let cancelled = false;
     // Firestore totals — only needed for the issuance modal balance calculation.
-    // Resolves independently so a slow Firestore round-trip never delays the table.
     getIssuanceTotals()
       .then((totals) => { if (!cancelled) { setAllTotals(totals); setTotalsLoading(false); } })
       .catch(() => { if (!cancelled) setTotalsLoading(false); });
-
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    getManualReceipts().then(setManualRecords).catch(() => {});
+  }, [manualRefresh]);
+
+  useEffect(() => {
+    getAdjustments().then(setAdjustments).catch(() => {});
+  }, [adjustmentsRefresh]);
+
+  const records = useMemo(() => {
+    // If a manual record has an arcgisObjectId, it supersedes (overrides) the
+    // matching ArcGIS record — prevents duplicates after edit or failed delete.
+    const supersededIds = new Set(
+      manualRecords.filter((r) => r.arcgisObjectId).map((r) => String(r.arcgisObjectId))
+    );
+    return [
+      ...arcgisRecords.filter((r) => !supersededIds.has(String(r.objectid))),
+      ...manualRecords,
+    ].sort((a, b) => (b.date_time_received || 0) - (a.date_time_received || 0));
+  }, [arcgisRecords, manualRecords]);
 
   const categories = useMemo(() => {
     const cats = [...new Set(records.map((r) => r.category).filter(Boolean))].sort();
@@ -662,6 +1171,52 @@ function Inventory() {
   const pageItems  = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
   const closeModal = useCallback(() => setPhotoRecord(null), []);
+
+  const handleReceiptSuccess = useCallback((materialName) => {
+    setShowAddReceipt(false);
+    setReceiptSuccess(`"${materialName}" receipt recorded successfully.`);
+    setManualRefresh((n) => n + 1);
+    // Refresh ArcGIS records — cache was invalidated inside addManualReceipt
+    // after a successful sync, so this fetch returns the newly added feature.
+    setArcgisRefresh((n) => n + 1);
+    getIssuanceTotals().then(setAllTotals).catch(() => {});
+  }, []);
+
+  const handleRetrySync = useCallback(async (record) => {
+    setManualRecords((prev) =>
+      prev.map((r) => r.firestoreId === record.firestoreId ? { ...r, syncStatus: "pending" } : r)
+    );
+    try {
+      await retrySyncReceipt(record.firestoreId, record);
+      setManualRefresh((n) => n + 1);
+      setArcgisRefresh((n) => n + 1);
+    } catch {
+      setManualRefresh((n) => n + 1);
+    }
+  }, []);
+
+  const handleEditSuccess = useCallback((materialName) => {
+    setEditTarget(null);
+    setEditSuccess(`"${materialName}" receipt updated.`);
+    setManualRefresh((n) => n + 1);
+    setArcgisRefresh((n) => n + 1);
+  }, []);
+
+  const handleDeleteReceipt = useCallback(async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    await deleteManualReceipt(deleteTarget.firestoreId, deleteTarget.arcgisObjectId);
+    setDeleting(false);
+    setDeleteTarget(null);
+    setManualRefresh((n) => n + 1);
+    if (deleteTarget.arcgisObjectId) setArcgisRefresh((n) => n + 1);
+  }, [deleteTarget]);
+
+  const handleAdjustmentSuccess = useCallback((materialName) => {
+    setShowAddAdjustment(false);
+    setAdjustmentSuccess(`Adjustment for "${materialName}" recorded.`);
+    setAdjustmentsRefresh((n) => n + 1);
+  }, []);
 
   const handleIssuanceSuccess = useCallback((materialName, refNumber) => {
     setIssuanceTarget(null);
@@ -717,48 +1272,55 @@ function Inventory() {
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <h3>Inventory</h3>
             <span className="panel-badge">
-              {activeTab === "receipts" ? `${totals.count} receipts` : "Issuance records"}
+              {{ receipts: `${totals.count} receipts`, stock: "Stock levels", issuances: "Issuance records", adjustments: "Adjustments" }[activeTab]}
             </span>
           </div>
-          {canIssue && (
-            <button
-              className={`issue-btn${totalsLoading ? " issue-btn--loading" : ""}`}
-              onClick={() => setIssuanceTarget({})}
-              aria-label="Record a new item issuance"
-            >
-              {totalsLoading ? "Loading…" : "+ Issue Item"}
-            </button>
-          )}
+          <div style={{ display: "flex", gap: 8 }}>
+            {canIssue && (
+              <button className="issue-btn" onClick={() => setShowAddReceipt(true)} aria-label="Add receipt">
+                + Add Receipt
+              </button>
+            )}
+            {canEdit && (
+              <button className="issue-btn" onClick={() => setShowAddAdjustment(true)} aria-label="Adjust stock">
+                + Adjust Stock
+              </button>
+            )}
+            {canIssue && (
+              <button
+                className={`issue-btn${totalsLoading ? " issue-btn--loading" : ""}`}
+                onClick={() => setIssuanceTarget({})}
+                aria-label="Issue item"
+              >
+                {totalsLoading ? "Loading…" : "+ Issue Item"}
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Tab bar */}
         <div className="inv-tab-bar" role="tablist" aria-label="Inventory sections">
-          <button
-            role="tab"
-            aria-selected={activeTab === "receipts"}
-            className={`inv-tab-btn ${activeTab === "receipts" ? "inv-tab-btn--active" : ""}`}
-            onClick={() => setActiveTab("receipts")}
-          >
-            Receipts
-          </button>
-          <button
-            role="tab"
-            aria-selected={activeTab === "issuances"}
-            className={`inv-tab-btn ${activeTab === "issuances" ? "inv-tab-btn--active" : ""}`}
-            onClick={() => setActiveTab("issuances")}
-          >
-            Issuances
-          </button>
+          {[
+            { id: "receipts",    label: "Receipts"    },
+            { id: "stock",       label: "Stock"       },
+            { id: "issuances",   label: "Issuances"   },
+            { id: "adjustments", label: "Adjustments" },
+          ].map((t) => (
+            <button key={t.id} role="tab" aria-selected={activeTab === t.id}
+              className={`inv-tab-btn ${activeTab === t.id ? "inv-tab-btn--active" : ""}`}
+              onClick={() => setActiveTab(t.id)}>
+              {t.label}
+            </button>
+          ))}
         </div>
 
         {/* ── Receipts Tab ──────────────────────── */}
         {activeTab === "receipts" && (
           <>
-            {issuanceSuccess && (
-              <div className="issuance-success-banner" role="status">
-                {issuanceSuccess}
-              </div>
-            )}
+            {receiptSuccess    && <div className="issuance-success-banner" role="status">{receiptSuccess}</div>}
+            {editSuccess       && <div className="issuance-success-banner" role="status">{editSuccess}</div>}
+            {adjustmentSuccess && <div className="issuance-success-banner" role="status">{adjustmentSuccess}</div>}
+            {issuanceSuccess   && <div className="issuance-success-banner" role="status">{issuanceSuccess}</div>}
 
             <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-color)" }}>
               <div className="table-toolbar">
@@ -805,6 +1367,7 @@ function Inventory() {
                       <th scope="col">Remarks</th>
                       <th scope="col">Photos</th>
                       {canIssue && <th scope="col">Issue</th>}
+                      {(canEdit || canDelete) && <th scope="col">Actions</th>}
                     </tr>
                   </thead>
                   <tbody>
@@ -820,6 +1383,7 @@ function Inventory() {
                         <td><span className="inv-skeleton-cell inv-skeleton-cell--lg" /></td>
                         <td><span className="inv-skeleton-cell inv-skeleton-cell--sm" /></td>
                         {canIssue && <td><span className="inv-skeleton-cell inv-skeleton-cell--sm" /></td>}
+                        {(canEdit || canDelete) && <td><span className="inv-skeleton-cell inv-skeleton-cell--sm" /></td>}
                       </tr>
                     ))}
                   </tbody>
@@ -849,6 +1413,7 @@ function Inventory() {
                       <th scope="col">Remarks</th>
                       <th scope="col">Photos</th>
                       {canIssue && <th scope="col">Issue</th>}
+                      {(canEdit || canDelete) && <th scope="col">Actions</th>}
                     </tr>
                   </thead>
                   <tbody>
@@ -869,19 +1434,57 @@ function Inventory() {
                           {r.remarks || "—"}
                         </td>
                         <td data-label="">
-                          <button className="photo-view-btn" onClick={() => setPhotoRecord(r)} aria-label={`View photos for ${r.material_name || "receipt"}`}>
-                            View
-                          </button>
+                          {r.source === "manual" ? (
+                            r.syncStatus === "failed" ? (
+                              <button
+                                className="photo-view-btn"
+                                style={{ background: "rgba(220,53,69,0.1)", color: "#dc3545", borderColor: "rgba(220,53,69,0.3)" }}
+                                onClick={() => handleRetrySync(r)}
+                                aria-label="Retry ArcGIS sync"
+                              >
+                                Retry sync
+                              </button>
+                            ) : r.syncStatus === "pending" ? (
+                              <span style={{ fontSize: 11, color: "var(--text-muted)", fontStyle: "italic" }}>Syncing…</span>
+                            ) : (
+                              <span style={{ color: "var(--text-muted)", fontSize: 12 }}>—</span>
+                            )
+                          ) : (
+                            <button className="photo-view-btn" onClick={() => setPhotoRecord(r)} aria-label={`View photos for ${r.material_name || "receipt"}`}>
+                              View
+                            </button>
+                          )}
                         </td>
                         {canIssue && (
                           <td data-label="">
-                            <button
-                              className="issue-row-btn"
-                              onClick={() => setIssuanceTarget(r)}
-                              aria-label={`Issue ${r.material_name || "item"}`}
-                            >
+                            <button className="issue-row-btn" onClick={() => setIssuanceTarget(r)}
+                              aria-label={`Issue ${r.material_name || "item"}`}>
                               Issue
                             </button>
+                          </td>
+                        )}
+                        {(canEdit || canDelete) && (
+                          <td data-label="">
+                            {r.source === "manual" ? (
+                              <div style={{ display: "flex", gap: 4 }}>
+                                {canEdit && (
+                                  <button className="photo-view-btn" onClick={() => setEditTarget(r)}
+                                    aria-label={`Edit ${r.material_name || "receipt"}`}>
+                                    Edit
+                                  </button>
+                                )}
+                                {canDelete && (
+                                  <button className="photo-view-btn"
+                                    style={{ color: "#dc3545", borderColor: "rgba(220,53,69,0.3)" }}
+                                    onClick={() => setDeleteTarget(r)}
+                                    aria-label={`Delete ${r.material_name || "receipt"}`}>
+                                    Delete
+                                  </button>
+                                )}
+                              </div>
+                            ) : (
+                              <span style={{ color: "var(--text-muted)", fontSize: 12 }}>—</span>
+                            )}
                           </td>
                         )}
                       </tr>
@@ -895,22 +1498,53 @@ function Inventory() {
           </>
         )}
 
+        {/* ── Stock Tab ─────────────────────────── */}
+        {activeTab === "stock" && (
+          <StockTab records={records} allTotals={allTotals} adjustments={adjustments} />
+        )}
+
         {/* ── Issuances Tab ─────────────────────── */}
         {activeTab === "issuances" && (
           <>
             {!canIssue && (
-              <PermissionNotice
-                department={user?.department}
-                action="record new issuances"
-              />
+              <PermissionNotice department={user?.department} action="record new issuances" />
             )}
             <IssuancesPanel refresh={issuancesRefresh} />
+          </>
+        )}
+
+        {/* ── Adjustments Tab ───────────────────── */}
+        {activeTab === "adjustments" && (
+          <>
+            {!canEdit && (
+              <PermissionNotice department={user?.department} action="record stock adjustments" />
+            )}
+            <AdjustmentsPanel adjustments={adjustments} />
           </>
         )}
       </section>
 
       {/* ── Modals ──────────────────────────────── */}
       {photoRecord && <PhotoModal record={photoRecord} onClose={closeModal} />}
+
+      {showAddReceipt && (
+        <ReceiptModal user={user} onClose={() => setShowAddReceipt(false)} onSuccess={handleReceiptSuccess} />
+      )}
+
+      {editTarget && (
+        <ReceiptModal user={user} editRecord={editTarget}
+          onClose={() => setEditTarget(null)} onSuccess={handleEditSuccess} />
+      )}
+
+      {deleteTarget && (
+        <DeleteConfirmModal record={deleteTarget} deleting={deleting}
+          onConfirm={handleDeleteReceipt} onCancel={() => setDeleteTarget(null)} />
+      )}
+
+      {showAddAdjustment && (
+        <AddAdjustmentModal allRecords={records} user={user}
+          onClose={() => setShowAddAdjustment(false)} onSuccess={handleAdjustmentSuccess} />
+      )}
 
       {issuanceTarget !== null && (
         <IssuanceModal

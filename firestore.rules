@@ -203,6 +203,24 @@ service cloud.firestore {
       allow write: if hasDeptPermission('inventory', 'Create');
     }
 
+    // ── inventoryAdjustments ─────────────────────────────────────
+    // Corrections, write-offs, and transfers. Requires Edit-level access
+    // (one tier above Create) — adjustments are more sensitive than plain
+    // receipts or issuances because they can increase or decrease stock
+    // without a corresponding physical transaction.
+    match /inventoryAdjustments/{docId} {
+      allow read: if request.auth != null;
+      allow write: if hasDeptPermission('inventory', 'Edit');
+    }
+
+    // ── manualReceipts ───────────────────────────────────────────
+    // Goods-received records added manually through the Inventory page.
+    // Same Inventory-page department gate as issuances / inventoryItems.
+    match /manualReceipts/{docId} {
+      allow read: if request.auth != null;
+      allow write: if hasDeptPermission('inventory', 'Create');
+    }
+
     // ── droneActivities ──────────────────────────────────────────
     // All authenticated users can read (transparency for other depts).
     // Create / update / delete require at least 'Create' on the Drone &
