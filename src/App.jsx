@@ -31,6 +31,13 @@ const AdminPanel = lazy(() => import("./pages/AdminPanel"));
 
 import "./App.css";
 
+// Baked in at build time — safe to hoist to module scope so watchOwnProfile
+// can reference it without being inside the useEffect closure.
+const ADMIN_EMAILS = (import.meta.env.VITE_FIRST_ADMIN_EMAIL ?? "")
+  .split(",")
+  .map((e) => e.trim().toLowerCase())
+  .filter(Boolean);
+
 // ─── Registration: resilient profile write ────────────────────
 // Retries setDoc up to 3 times (1.5 s / 3 s backoff), fully non-blocking.
 // onFinalFailure() is called when all attempts are exhausted so the UI
@@ -148,16 +155,19 @@ function App() {
       doc(db, "userRoles", uid),
       (snap) => {
         if (!snap.exists()) return;
-        const data       = snap.data();
-        const freshRole   = data.role          ?? "viewer";
-        const freshStatus = data.accountStatus ?? "Active";
+        const data = snap.data();
 
         setUser((prev) => {
           if (!prev || prev.uid !== uid) return prev;
+
+          // Never let a stale Firestore snapshot demote a designated admin.
+          // The profile write is async — until it settles the snapshot may
+          // still show the old role. Admins keep their role regardless.
+          const isDesignated = ADMIN_EMAILS.includes(prev.email?.toLowerCase());
+          const freshRole   = isDesignated ? "admin"  : (data.role          ?? "viewer");
+          const freshStatus = isDesignated ? "Active" : (data.accountStatus ?? "Active");
+
           if (prev.role === freshRole && prev.accountStatus === freshStatus) return prev;
-          console.log(
-            `[ARIMA ${new Date().toISOString()}] Profile updated — role=${freshRole} status=${freshStatus} (was role=${prev.role} status=${prev.accountStatus})`
-          );
           return {
             ...prev,
             role:          freshRole,
@@ -173,12 +183,6 @@ function App() {
   };
 
   useEffect(() => {
-    // Support comma-separated list of admin emails
-    const ADMIN_EMAILS = (import.meta.env.VITE_FIRST_ADMIN_EMAIL ?? "")
-      .split(",")
-      .map((e) => e.trim().toLowerCase())
-      .filter(Boolean);
-
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       const t0  = Date.now();
       const iso = () => new Date().toISOString();
@@ -242,29 +246,13 @@ function App() {
         let rank          = "";
 
         try {
-          // Promise.allSettled so a permission-denied on pendingRoles never
-          // crashes the entire read — we fall back gracefully to viewer role.
-          console.log(`[ARIMA ${iso()}] Starting parallel reads…`);
-          const t1 = Date.now();
-          const [roleResult, pendingResult] = await Promise.allSettled([
-            getDoc(doc(db, "userRoles",    firebaseUser.uid)),
-            getDoc(doc(db, "pendingRoles", firebaseUser.email)),
-          ]);
-          console.log(
-            `[ARIMA ${iso()}] Reads done in ${Date.now() - t1}ms —`,
-            `roleStatus=${roleResult.status} pendingStatus=${pendingResult.status}`
-          );
-
-          // If the critical userRoles read itself failed, re-throw to the catch block.
-          if (roleResult.status === "rejected") throw roleResult.reason;
-
-          const roleSnap    = roleResult.value;
-          const pendingSnap = pendingResult.status === "fulfilled" ? pendingResult.value : null;
+          // Fast path: only read userRoles. For returning users (the common
+          // case) this is the only Firestore round-trip needed — pendingRoles
+          // is irrelevant once a profile exists. New users get a second read.
+          const roleSnap = await getDoc(doc(db, "userRoles", firebaseUser.uid));
 
           if (roleSnap.exists()) {
-            // ── Returning user — role/status are whatever Firestore says.
-            // The server is the single source of truth; the client never
-            // assigns or escalates its own privileges here.
+            // ── Returning user ────────────────────────────────────
             const existing = roleSnap.data();
             role          = existing.role          ?? "viewer";
             accountStatus = existing.accountStatus ?? "Active";
@@ -275,8 +263,6 @@ function App() {
 
             const updates = { lastLogin: serverTimestamp() };
             if (!Object.prototype.hasOwnProperty.call(existing, "accountStatus")) {
-              // Legacy profile predating the status field — backfill as Active
-              // so existing operators are not retroactively locked out.
               updates.uid           = firebaseUser.uid;
               updates.fullName      = existing.fullName   || "";
               updates.department    = existing.department || "";
@@ -284,18 +270,11 @@ function App() {
               updates.accountStatus = "Active";
               accountStatus = "Active";
             }
-            // lastLogin update — single attempt, not worth retrying
+            // Fire-and-forget — never blocks auth resolution
             setDoc(doc(db, "userRoles", firebaseUser.uid), updates, { merge: true })
-              .catch((err) =>
-                console.error(`[ARIMA ${iso()}] lastLogin update failed:`, err.code, err.message)
-              );
-            console.log(`[ARIMA ${iso()}] Existing user role=${role} status=${accountStatus}`);
+              .catch(() => {});
           } else {
-            // ── Brand-new account ──────────────────────────────────
-            // Per platform policy: new registrations NEVER receive elevated
-            // access. They land as the lowest-privilege role, rank "Officer",
-            // and "Pending Approval" status — an administrator must
-            // explicitly review and promote them before they can use the app.
+            // ── Brand-new account ─────────────────────────────────
             const capturedName = signupFullNameRef.current;
             signupFullNameRef.current = "";
 
@@ -304,19 +283,15 @@ function App() {
             fullName      = capturedName;
             rank          = "Officer";
 
+            // Only new accounts need the pendingRoles check
+            const pendingSnap = await getDoc(doc(db, "pendingRoles", firebaseUser.email))
+              .catch(() => null);
+
             if (pendingSnap?.exists()) {
-              // An admin pre-assigned a role via Invite Users — honor it,
-              // but a pre-assigned role still requires no extra trust beyond
-              // what the admin explicitly granted (admin role is filtered out
-              // of the invite UI and blocked server-side).
               role = pendingSnap.data().role ?? "viewer";
-              deleteDoc(doc(db, "pendingRoles", firebaseUser.email))
-                .catch((err) =>
-                  console.warn(`[ARIMA ${iso()}] pendingRoles delete failed:`, err.code)
-                );
+              deleteDoc(doc(db, "pendingRoles", firebaseUser.email)).catch(() => {});
             }
 
-            console.log(`[ARIMA ${iso()}] New user — writing profile role=${role} status=${accountStatus} name="${capturedName}"`);
             writeProfileRetrying(firebaseUser.uid, {
               uid:           firebaseUser.uid,
               email:         firebaseUser.email,
@@ -384,15 +359,15 @@ function App() {
   // therefore take effect for everyone immediately, the same way role/
   // status changes already do via watchOwnProfile.
   useEffect(() => {
-    if (!user?.uid) {
-      setPermissionMatrix({});
-      return;
-    }
+    if (!user?.uid) return;
     const unsubscribe = subscribeToPermissionRows(
       (rows) => setPermissionMatrix(matrixFromRows(rows)),
       (err) => console.warn("[ARIMA] Permission matrix read error:", err.code)
     );
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+      setPermissionMatrix({});
+    };
   }, [user?.uid]);
 
   const handleLogin = async (e) => {
