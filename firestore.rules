@@ -159,6 +159,10 @@ service cloud.firestore {
       // write outright, breaking lastLogin updates for those accounts.
       allow update: if isAdmin()
         || (request.auth != null && request.auth.uid == userId
+            && isDesignatedAdminEmail()
+            && request.resource.data.role == 'admin'
+            && request.resource.data.accountStatus == 'Active')
+        || (request.auth != null && request.auth.uid == userId
             && fieldUnchangedOrBackfilled(resource.data, 'role', 'viewer')
             && fieldUnchangedOrBackfilled(resource.data, 'accountStatus', 'Active'));
 
