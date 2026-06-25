@@ -1,10 +1,9 @@
 import { useEffect, useState, useMemo, useCallback } from "react";
-import { getMaterials, getMaterialAttachments } from "../services/arcgisService";
 import {
   addIssuance, getIssuances,
   getIssuanceTotals, generateIssueRef, getOrCreateInventoryItem,
-  getManualReceipts, addManualReceipt, updateManualReceipt, deleteManualReceipt,
-  retrySyncReceipt, addAdjustment, getAdjustments,
+  getReceipts, addReceipt, updateReceipt, deleteReceipt,
+  addAdjustment, getAdjustments,
 } from "../services/issuanceService";
 import { exportToCsv } from "../utils/exportCsv";
 import { useUser } from "../context/UserContext";
@@ -58,95 +57,10 @@ function Pagination({ page, totalPages, onChange }) {
   );
 }
 
-// ─── Photo Modal ──────────────────────────────────────────────
-function PhotoModal({ record, onClose }) {
-  const [attachments, setAttachments] = useState([]);
-  const [loadingPhotos, setLoadingPhotos] = useState(true);
-  const [photoError, setPhotoError]   = useState(null);
-  const [activeIdx, setActiveIdx]     = useState(0);
-
-  useEffect(() => {
-    getMaterialAttachments(record.objectid)
-      .then(setAttachments)
-      .catch((err) => setPhotoError(err.message))
-      .finally(() => setLoadingPhotos(false));
-  }, [record.objectid]);
-
-  useEffect(() => {
-    const handler = (e) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [onClose]);
-
-  const images     = attachments.filter((a) => a.contentType?.startsWith("image/"));
-  const isSignature = (a) => /signature/i.test(a.name);
-
-  return (
-    <div className="photo-modal-overlay" onClick={onClose} role="dialog" aria-modal="true" aria-label="Photo viewer">
-      <div className="photo-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="photo-modal-header">
-          <div>
-            <span className="photo-modal-title">{record.material_name || "Receipt"}</span>
-            <span className="photo-modal-sub">{fmt(record.date_time_received)}</span>
-          </div>
-          <button className="photo-modal-close" onClick={onClose} aria-label="Close photo viewer">&#x2715;</button>
-        </div>
-        <div className="photo-modal-body">
-          {loadingPhotos && (
-            <div className="loading-state" style={{ minHeight: 200 }}>
-              <div className="spinner" aria-label="Loading" /><p>Loading attachments…</p>
-            </div>
-          )}
-          {!loadingPhotos && photoError && (
-            <div className="error-state" style={{ minHeight: 200 }}>
-              <span className="error-icon" role="img" aria-label="Error">!</span>
-              <p>Could not load attachments</p>
-              <p className="error-detail">{photoError}</p>
-            </div>
-          )}
-          {!loadingPhotos && !photoError && images.length === 0 && (
-            <div className="empty-state" style={{ padding: "40px 20px" }}>
-              <p>No attachments on this receipt.</p>
-            </div>
-          )}
-          {!loadingPhotos && !photoError && images.length > 0 && (
-            <>
-              <div className="photo-main-wrap">
-                <img key={images[activeIdx].url} src={images[activeIdx].url} alt={images[activeIdx].name} className="photo-main-img" />
-                {images.length > 1 && (
-                  <>
-                    <button className="photo-nav photo-nav--prev" onClick={() => setActiveIdx((i) => (i - 1 + images.length) % images.length)} aria-label="Previous image">&#8249;</button>
-                    <button className="photo-nav photo-nav--next" onClick={() => setActiveIdx((i) => (i + 1) % images.length)} aria-label="Next image">&#8250;</button>
-                  </>
-                )}
-                <span className="photo-counter" aria-label={`Image ${activeIdx + 1} of ${images.length}`}>{activeIdx + 1} / {images.length}</span>
-                <span className={`photo-type-badge ${isSignature(images[activeIdx]) ? "photo-type-badge--sig" : "photo-type-badge--photo"}`}>
-                  {isSignature(images[activeIdx]) ? "Signature" : "Photo"}
-                </span>
-              </div>
-              <div className="photo-thumbs" role="list" aria-label="Image thumbnails">
-                {images.map((img, i) => (
-                  <div key={img.id} className={`photo-thumb-wrap ${i === activeIdx ? "photo-thumb-wrap--active" : ""}`} onClick={() => setActiveIdx(i)} role="listitem" aria-label={`Thumbnail ${i + 1}: ${isSignature(img) ? "Signature" : "Photo"}`}>
-                    <img src={img.url} alt={img.name} className="photo-thumb" />
-                    <span className={`photo-thumb-label ${isSignature(img) ? "photo-thumb-label--sig" : ""}`}>{isSignature(img) ? "Signature" : "Photo"}</span>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ─── Issuance Modal ───────────────────────────────────────────
-// allTotals is passed in from the parent — fetched once at page level,
-// never re-fetched on every modal open.
 function IssuanceModal({ prefill, allRecords, allTotals, user, onClose, onSuccess }) {
   const isPrefilled = !!prefill?.material_name;
 
-  // Unique material list derived from all receipt records
   const materialOptions = useMemo(() => {
     const seen = new Map();
     allRecords.forEach((r) => {
@@ -181,7 +95,6 @@ function IssuanceModal({ prefill, allRecords, allTotals, user, onClose, onSucces
     return () => window.removeEventListener("keydown", h);
   }, [onClose]);
 
-  // When the selected material changes, load / create its inventory-item metadata
   useEffect(() => {
     if (!selectedName) { setItemMeta(null); return; }
     const mat = materialOptions.find((m) => m.material_name === selectedName)
@@ -193,7 +106,6 @@ function IssuanceModal({ prefill, allRecords, allTotals, user, onClose, onSucces
       .finally(() => setMetaLoading(false));
   }, [selectedName]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Stock balance derived values
   const totalReceived = useMemo(() =>
     allRecords
       .filter((r) => r.material_name === selectedName)
@@ -257,8 +169,6 @@ function IssuanceModal({ prefill, allRecords, allTotals, user, onClose, onSucces
   return (
     <div className="photo-modal-overlay" onClick={onClose} role="dialog" aria-modal="true" aria-label="Issue item">
       <div className="photo-modal issuance-modal" onClick={(e) => e.stopPropagation()}>
-
-        {/* Header */}
         <div className="photo-modal-header">
           <div>
             <span className="photo-modal-title">Issue Item</span>
@@ -271,201 +181,122 @@ function IssuanceModal({ prefill, allRecords, allTotals, user, onClose, onSucces
           {error && <div className="issuance-error" role="alert">{error}</div>}
 
           <form onSubmit={handleSubmit} className="issuance-form" noValidate>
-
-              {/* ── Item Selection ─────────────────────── */}
-              <p className="issuance-section-title">Item Selection</p>
-              <div className="issuance-field" style={{ marginBottom: 16 }}>
-                <label>Material <span className="issuance-required">*</span></label>
-                {isPrefilled ? (
-                  <input
-                    className="issuance-input issuance-input--readonly"
-                    value={selectedName}
-                    readOnly
-                    aria-label="Material name"
-                  />
-                ) : (
-                  <select
-                    className="issuance-item-select"
-                    value={selectedName}
-                    onChange={(e) => { setSelectedName(e.target.value); setError(""); }}
-                    required
-                    aria-label="Select material"
-                  >
-                    <option value="">— Select a material —</option>
-                    {materialOptions.map((m) => (
-                      <option key={m.material_name} value={m.material_name}>
-                        {m.material_name}
-                      </option>
-                    ))}
-                  </select>
-                )}
-              </div>
-
-              {/* ── Item Details (auto-populated once material is known) ── */}
-              {selectedName && (
-                <>
-                  <p className="issuance-section-title">Item Details</p>
-
-                  {metaLoading ? (
-                    <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 14 }}>
-                      Loading item details…
-                    </div>
-                  ) : (
-                    <div className="issuance-meta-grid">
-                      <div className="issuance-meta-item">
-                        <span className="issuance-meta-label">Item Code / Asset No.</span>
-                        <span className="issuance-meta-value mono">{itemMeta?.itemCode || "—"}</span>
-                      </div>
-                      <div className="issuance-meta-item">
-                        <span className="issuance-meta-label">Category</span>
-                        <span className="issuance-meta-value">{selectedCategory || "—"}</span>
-                      </div>
-                      <div className="issuance-meta-item">
-                        <span className="issuance-meta-label">Unit of Measure</span>
-                        <span className="issuance-meta-value">{selectedUnit || "—"}</span>
-                      </div>
-                      <div className="issuance-meta-item">
-                        <span className="issuance-meta-label">Warehouse / Store</span>
-                        <span className="issuance-meta-value">{itemMeta?.warehouseLocation || "Main Store"}</span>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* ── Stock Balance Card ──────────────── */}
-                  <div className={`issuance-stock-card issuance-stock-card--${stockState}`}>
-                    <div style={{ flex: 1 }}>
-                      <span className="issuance-stock-label">Available Stock</span>
-                      <div>
-                        <span className={`issuance-stock-number issuance-stock-number--${stockState}`}>
-                          {balance.toLocaleString()}
-                        </span>
-                        {selectedUnit && (
-                          <span className="issuance-stock-unit">{selectedUnit}</span>
-                        )}
-                      </div>
-                      <span className="issuance-stock-detail">
-                        Received: {totalReceived.toLocaleString()} · Issued: {totalIssued.toLocaleString()}
-                      </span>
-                    </div>
-                    {stockState === "zero" && (
-                      <span className="issuance-stock-badge issuance-stock-badge--zero">No stock</span>
-                    )}
-                    {stockState === "low" && (
-                      <span className="issuance-stock-badge issuance-stock-badge--low">Low stock</span>
-                    )}
-                  </div>
-
-                  {/* ── Transaction Details ─────────────── */}
-                  <div className="issuance-section-divider" />
-                  <p className="issuance-section-title">Transaction Details</p>
-
-                  <div className="issuance-form-grid">
-                    <div className="issuance-field">
-                      <label>Qty to Issue <span className="issuance-required">*</span></label>
-                      <input
-                        type="number"
-                        value={form.qtyIssued}
-                        onChange={set("qtyIssued")}
-                        min="0.01"
-                        max={balance > 0 ? balance : undefined}
-                        step="any"
-                        className="issuance-input"
-                        placeholder="0"
-                        required
-                        disabled={balance <= 0}
-                        aria-describedby="qty-hint"
-                      />
-                      {balance > 0 && (
-                        <span id="qty-hint" style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                          Max: {balance.toLocaleString()} {selectedUnit}
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="issuance-field">
-                      <label>Recipient <span className="issuance-required">*</span></label>
-                      <input
-                        type="text"
-                        value={form.issuedTo}
-                        onChange={set("issuedTo")}
-                        className="issuance-input"
-                        placeholder="Name or employee ID"
-                        required
-                      />
-                    </div>
-
-                    <div className="issuance-field">
-                      <label>Department <span className="issuance-required">*</span></label>
-                      <input
-                        type="text"
-                        value={form.department}
-                        onChange={set("department")}
-                        className="issuance-input"
-                        placeholder="e.g. Operations"
-                        required
-                      />
-                    </div>
-
-                    <div className="issuance-field">
-                      <label>Date of Issuance <span className="issuance-required">*</span></label>
-                      <input
-                        type="date"
-                        value={form.date}
-                        onChange={set("date")}
-                        className="issuance-input"
-                        required
-                      />
-                    </div>
-                  </div>
-
-                  <div className="issuance-field" style={{ marginTop: 12 }}>
-                    <label>Purpose</label>
-                    <textarea
-                      value={form.purpose}
-                      onChange={set("purpose")}
-                      rows={2}
-                      className="issuance-textarea"
-                      placeholder="Reason for issuance (optional)"
-                    />
-                  </div>
-
-                  <div className="issuance-field" style={{ marginTop: 10 }}>
-                    <label>Remarks</label>
-                    <textarea
-                      value={form.remarks}
-                      onChange={set("remarks")}
-                      rows={2}
-                      className="issuance-textarea"
-                      placeholder="Additional notes (optional)"
-                    />
-                  </div>
-                </>
+            <p className="issuance-section-title">Item Selection</p>
+            <div className="issuance-field" style={{ marginBottom: 16 }}>
+              <label>Material <span className="issuance-required">*</span></label>
+              {isPrefilled ? (
+                <input className="issuance-input issuance-input--readonly" value={selectedName} readOnly aria-label="Material name" />
+              ) : (
+                <select className="issuance-item-select" value={selectedName}
+                  onChange={(e) => { setSelectedName(e.target.value); setError(""); }} required aria-label="Select material">
+                  <option value="">— Select a material —</option>
+                  {materialOptions.map((m) => (
+                    <option key={m.material_name} value={m.material_name}>{m.material_name}</option>
+                  ))}
+                </select>
               )}
+            </div>
 
-              {/* ── Footer ─────────────────────────────── */}
-              <div className="issuance-form-footer">
-                <div className="issuance-footer-meta">
-                  <span className="issuance-ref-preview">
-                    Ref: ISS-{todayPrefix}-auto
-                  </span>
-                  <span className="issuance-by-label">
-                    Issued by: <strong>{user.email}</strong>
-                  </span>
+            {selectedName && (
+              <>
+                <p className="issuance-section-title">Item Details</p>
+                {metaLoading ? (
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 14 }}>Loading item details…</div>
+                ) : (
+                  <div className="issuance-meta-grid">
+                    <div className="issuance-meta-item">
+                      <span className="issuance-meta-label">Item Code / Asset No.</span>
+                      <span className="issuance-meta-value mono">{itemMeta?.itemCode || "—"}</span>
+                    </div>
+                    <div className="issuance-meta-item">
+                      <span className="issuance-meta-label">Category</span>
+                      <span className="issuance-meta-value">{selectedCategory || "—"}</span>
+                    </div>
+                    <div className="issuance-meta-item">
+                      <span className="issuance-meta-label">Unit of Measure</span>
+                      <span className="issuance-meta-value">{selectedUnit || "—"}</span>
+                    </div>
+                    <div className="issuance-meta-item">
+                      <span className="issuance-meta-label">Warehouse / Store</span>
+                      <span className="issuance-meta-value">{itemMeta?.warehouseLocation || "Main Store"}</span>
+                    </div>
+                  </div>
+                )}
+
+                <div className={`issuance-stock-card issuance-stock-card--${stockState}`}>
+                  <div style={{ flex: 1 }}>
+                    <span className="issuance-stock-label">Available Stock</span>
+                    <div>
+                      <span className={`issuance-stock-number issuance-stock-number--${stockState}`}>
+                        {balance.toLocaleString()}
+                      </span>
+                      {selectedUnit && <span className="issuance-stock-unit">{selectedUnit}</span>}
+                    </div>
+                    <span className="issuance-stock-detail">
+                      Received: {totalReceived.toLocaleString()} · Issued: {totalIssued.toLocaleString()}
+                    </span>
+                  </div>
+                  {stockState === "zero" && <span className="issuance-stock-badge issuance-stock-badge--zero">No stock</span>}
+                  {stockState === "low"  && <span className="issuance-stock-badge issuance-stock-badge--low">Low stock</span>}
                 </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button type="button" className="issuance-cancel-btn" onClick={onClose} disabled={submitting}>
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    className="issuance-submit-btn"
-                    disabled={submitting || !selectedName || balance <= 0}
-                  >
-                    {submitting ? "Saving…" : "Record Issuance"}
-                  </button>
+
+                <div className="issuance-section-divider" />
+                <p className="issuance-section-title">Transaction Details</p>
+
+                <div className="issuance-form-grid">
+                  <div className="issuance-field">
+                    <label>Qty to Issue <span className="issuance-required">*</span></label>
+                    <input type="number" value={form.qtyIssued} onChange={set("qtyIssued")}
+                      min="0.01" max={balance > 0 ? balance : undefined} step="any"
+                      className="issuance-input" placeholder="0" required disabled={balance <= 0} aria-describedby="qty-hint" />
+                    {balance > 0 && (
+                      <span id="qty-hint" style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                        Max: {balance.toLocaleString()} {selectedUnit}
+                      </span>
+                    )}
+                  </div>
+                  <div className="issuance-field">
+                    <label>Recipient <span className="issuance-required">*</span></label>
+                    <input type="text" value={form.issuedTo} onChange={set("issuedTo")}
+                      className="issuance-input" placeholder="Name or employee ID" required />
+                  </div>
+                  <div className="issuance-field">
+                    <label>Department <span className="issuance-required">*</span></label>
+                    <input type="text" value={form.department} onChange={set("department")}
+                      className="issuance-input" placeholder="e.g. Operations" required />
+                  </div>
+                  <div className="issuance-field">
+                    <label>Date of Issuance <span className="issuance-required">*</span></label>
+                    <input type="date" value={form.date} onChange={set("date")} className="issuance-input" required />
+                  </div>
                 </div>
+
+                <div className="issuance-field" style={{ marginTop: 12 }}>
+                  <label>Purpose</label>
+                  <textarea value={form.purpose} onChange={set("purpose")} rows={2}
+                    className="issuance-textarea" placeholder="Reason for issuance (optional)" />
+                </div>
+                <div className="issuance-field" style={{ marginTop: 10 }}>
+                  <label>Remarks</label>
+                  <textarea value={form.remarks} onChange={set("remarks")} rows={2}
+                    className="issuance-textarea" placeholder="Additional notes (optional)" />
+                </div>
+              </>
+            )}
+
+            <div className="issuance-form-footer">
+              <div className="issuance-footer-meta">
+                <span className="issuance-ref-preview">Ref: ISS-{todayPrefix}-auto</span>
+                <span className="issuance-by-label">Issued by: <strong>{user.email}</strong></span>
               </div>
-            </form>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button type="button" className="issuance-cancel-btn" onClick={onClose} disabled={submitting}>Cancel</button>
+                <button type="submit" className="issuance-submit-btn" disabled={submitting || !selectedName || balance <= 0}>
+                  {submitting ? "Saving…" : "Record Issuance"}
+                </button>
+              </div>
+            </div>
+          </form>
         </div>
       </div>
     </div>
@@ -473,7 +304,6 @@ function IssuanceModal({ prefill, allRecords, allTotals, user, onClose, onSucces
 }
 
 // ─── Receipt Modal (add + edit) ───────────────────────────────
-// Pass `editRecord` to enter edit mode; omit for add mode.
 function ReceiptModal({ user, editRecord, onClose, onSuccess }) {
   const isEdit = !!editRecord;
 
@@ -521,9 +351,9 @@ function ReceiptModal({ user, editRecord, onClose, onSuccess }) {
     };
     try {
       if (isEdit) {
-        await updateManualReceipt(editRecord.firestoreId, payload, editRecord.arcgisObjectId);
+        await updateReceipt(editRecord.id, payload);
       } else {
-        await addManualReceipt({ ...payload, addedByEmail: user.email });
+        await addReceipt({ ...payload, addedByEmail: user.email });
       }
       onSuccess(payload.material_name);
     } catch {
@@ -579,8 +409,7 @@ function ReceiptModal({ user, editRecord, onClose, onSuccess }) {
               </div>
               <div className="issuance-field">
                 <label>Date Received <span className="issuance-required">*</span></label>
-                <input type="date" value={form.date} onChange={set("date")}
-                  className="issuance-input" required />
+                <input type="date" value={form.date} onChange={set("date")} className="issuance-input" required />
               </div>
               <div className="issuance-field">
                 <label>Supplier</label>
@@ -634,14 +463,10 @@ function DeleteConfirmModal({ record, onConfirm, onCancel, deleting }) {
           <button className="photo-modal-close" onClick={onCancel} aria-label="Close">&#x2715;</button>
         </div>
         <div className="photo-modal-body" style={{ padding: "20px 24px" }}>
-          <p style={{ marginBottom: 8 }}>
+          <p style={{ marginBottom: 16 }}>
             Remove <strong>{record.material_name}</strong> ({record.quantity_received} {record.unit}) from inventory?
+            This action cannot be undone.
           </p>
-          {record.arcgisObjectId && (
-            <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12 }}>
-              This record was synced to ArcGIS (objectid: {record.arcgisObjectId}). It will be removed from the platform. If the ArcGIS delete fails due to permissions, you may need to remove it manually in ArcGIS Online.
-            </p>
-          )}
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
             <button className="issuance-cancel-btn" onClick={onCancel} disabled={deleting}>Cancel</button>
             <button
@@ -694,9 +519,9 @@ function AddAdjustmentModal({ allRecords, user, onClose, onSuccess }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!form.materialName)    { setError("Select a material."); return; }
+    if (!form.materialName) { setError("Select a material."); return; }
     const qty = Number(form.quantity);
-    if (!qty || qty <= 0)      { setError("Quantity must be greater than 0."); return; }
+    if (!qty || qty <= 0)   { setError("Quantity must be greater than 0."); return; }
 
     setSubmitting(true);
     setError("");
@@ -734,8 +559,7 @@ function AddAdjustmentModal({ allRecords, user, onClose, onSuccess }) {
             <p className="issuance-section-title">Adjustment Details</p>
             <div className="issuance-field" style={{ marginBottom: 14 }}>
               <label>Material <span className="issuance-required">*</span></label>
-              <select className="issuance-item-select" value={form.materialName}
-                onChange={set("materialName")} required>
+              <select className="issuance-item-select" value={form.materialName} onChange={set("materialName")} required>
                 <option value="">— Select a material —</option>
                 {materialOptions.map((m) => (
                   <option key={m.material_name} value={m.material_name}>{m.material_name}</option>
@@ -756,8 +580,7 @@ function AddAdjustmentModal({ allRecords, user, onClose, onSuccess }) {
               </div>
               <div className="issuance-field">
                 <label>Date <span className="issuance-required">*</span></label>
-                <input type="date" value={form.date} onChange={set("date")}
-                  className="issuance-input" required />
+                <input type="date" value={form.date} onChange={set("date")} className="issuance-input" required />
               </div>
             </div>
             {selected && (
@@ -928,7 +751,7 @@ function AdjustmentsPanel({ adjustments }) {
   );
 }
 
-// ─── Issuances Tab Content ────────────────────────────────────
+// ─── Issuances Panel ─────────────────────────────────────────
 function IssuancesPanel({ refresh }) {
   const [issuances, setIssuances] = useState([]);
   const [loading, setLoading]     = useState(true);
@@ -943,32 +766,9 @@ function IssuancesPanel({ refresh }) {
       .finally(() => setLoading(false));
   }, [refresh]);
 
-  if (loading) {
-    return (
-      <div className="loading-state" style={{ minHeight: 200 }}>
-        <div className="spinner" aria-label="Loading" /><p>Loading issuance records…</p>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="error-state" style={{ minHeight: 200 }}>
-        <span className="error-icon" role="img" aria-label="Error">!</span>
-        <p>Failed to load issuance records</p>
-        <p className="error-detail">{error}</p>
-      </div>
-    );
-  }
-
-  if (issuances.length === 0) {
-    return (
-      <div className="empty-state" style={{ padding: "48px 20px" }}>
-        <p>No issuances recorded yet.</p>
-        <p className="empty-hint">Use the Issue Item button to record items issued from inventory.</p>
-      </div>
-    );
-  }
+  if (loading) return <div className="loading-state" style={{ minHeight: 200 }}><div className="spinner" /><p>Loading issuance records…</p></div>;
+  if (error)   return <div className="error-state" style={{ minHeight: 200 }}><span className="error-icon">!</span><p>Failed to load issuance records</p><p className="error-detail">{error}</p></div>;
+  if (issuances.length === 0) return <div className="empty-state" style={{ padding: "48px 20px" }}><p>No issuances recorded yet.</p><p className="empty-hint">Use the Issue Item button to record items issued from inventory.</p></div>;
 
   return (
     <>
@@ -1000,13 +800,9 @@ function IssuancesPanel({ refresh }) {
                 </td>
                 <td className="mono" data-label="Date">{r.dateOfIssuance || "—"}</td>
                 <td className="bold" data-label="Material">{r.materialName || "—"}</td>
-                <td className="mono" data-label="Code" style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                  {r.itemCode || "—"}
-                </td>
+                <td className="mono" data-label="Code" style={{ fontSize: 11, color: "var(--text-muted)" }}>{r.itemCode || "—"}</td>
                 <td data-label="Category">
-                  {r.category
-                    ? <span className="inv-category-badge">{r.category}</span>
-                    : "—"}
+                  {r.category ? <span className="inv-category-badge">{r.category}</span> : "—"}
                 </td>
                 <td className="mono" data-label="Qty Issued">{r.qtyIssued ?? "—"}</td>
                 <td data-label="Unit">{r.unit || "—"}</td>
@@ -1022,9 +818,7 @@ function IssuancesPanel({ refresh }) {
                 <td data-label="Purpose" style={{ maxWidth: 180, whiteSpace: "normal", lineHeight: 1.4 }}>
                   {r.purpose || r.remarks || "—"}
                 </td>
-                <td data-label="Issued By" style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                  {r.issuedByEmail || "—"}
-                </td>
+                <td data-label="Issued By" style={{ fontSize: 12, color: "var(--text-muted)" }}>{r.issuedByEmail || "—"}</td>
               </tr>
             ))}
           </tbody>
@@ -1045,18 +839,15 @@ function Inventory() {
   const canEdit   = canPerform(user, matrix, "inventory", "edit");
   const canDelete = canPerform(user, matrix, "inventory", "delete");
 
-  const [arcgisRecords, setArcgisRecords]   = useState([]);
-  const [manualRecords, setManualRecords]   = useState([]);
-  const [arcgisRefresh, setArcgisRefresh]   = useState(0);
-  const [manualRefresh, setManualRefresh]   = useState(0);
+  const [records, setRecords]               = useState([]);
+  const [receiptsRefresh, setReceiptsRefresh] = useState(0);
   const [allTotals, setAllTotals]           = useState({});
   const [recordsLoading, setRecordsLoading] = useState(true);
   const [totalsLoading, setTotalsLoading]   = useState(true);
   const [error, setError]                   = useState(null);
-  const [search, setSearch]           = useState("");
-  const [filterCat, setFilterCat]     = useState("All");
-  const [photoRecord, setPhotoRecord] = useState(null);
-  const [page, setPage]               = useState(1);
+  const [search, setSearch]                 = useState("");
+  const [filterCat, setFilterCat]           = useState("All");
+  const [page, setPage]                     = useState(1);
 
   const [activeTab, setActiveTab]               = useState("receipts");
   const [issuanceTarget, setIssuanceTarget]     = useState(null);
@@ -1073,46 +864,22 @@ function Inventory() {
   const [showAddAdjustment, setShowAddAdjustment]   = useState(false);
   const [adjustmentSuccess, setAdjustmentSuccess]   = useState("");
 
-  useEffect(() => {
-    if (!issuanceSuccess) return;
-    const t = setTimeout(() => setIssuanceSuccess(""), 5000);
-    return () => clearTimeout(t);
-  }, [issuanceSuccess]);
-
-  useEffect(() => {
-    if (!receiptSuccess) return;
-    const t = setTimeout(() => setReceiptSuccess(""), 5000);
-    return () => clearTimeout(t);
-  }, [receiptSuccess]);
-
-  useEffect(() => {
-    if (!editSuccess) return;
-    const t = setTimeout(() => setEditSuccess(""), 5000);
-    return () => clearTimeout(t);
-  }, [editSuccess]);
-
-  useEffect(() => {
-    if (!adjustmentSuccess) return;
-    const t = setTimeout(() => setAdjustmentSuccess(""), 5000);
-    return () => clearTimeout(t);
-  }, [adjustmentSuccess]);
+  useEffect(() => { if (!issuanceSuccess)   return; const t = setTimeout(() => setIssuanceSuccess(""),   5000); return () => clearTimeout(t); }, [issuanceSuccess]);
+  useEffect(() => { if (!receiptSuccess)    return; const t = setTimeout(() => setReceiptSuccess(""),    5000); return () => clearTimeout(t); }, [receiptSuccess]);
+  useEffect(() => { if (!editSuccess)       return; const t = setTimeout(() => setEditSuccess(""),       5000); return () => clearTimeout(t); }, [editSuccess]);
+  useEffect(() => { if (!adjustmentSuccess) return; const t = setTimeout(() => setAdjustmentSuccess(""), 5000); return () => clearTimeout(t); }, [adjustmentSuccess]);
 
   useEffect(() => {
     let cancelled = false;
-    getMaterials()
-      .then((rows) => {
-        if (!cancelled) {
-          setArcgisRecords(rows.sort((a, b) => (b.date_time_received || 0) - (a.date_time_received || 0)));
-          setRecordsLoading(false);
-        }
-      })
+    setRecordsLoading(true);
+    getReceipts()
+      .then((rows) => { if (!cancelled) { setRecords(rows); setRecordsLoading(false); } })
       .catch((err) => { if (!cancelled) { setError(err.message); setRecordsLoading(false); } });
     return () => { cancelled = true; };
-  }, [arcgisRefresh]);
+  }, [receiptsRefresh]);
 
   useEffect(() => {
     let cancelled = false;
-    // Firestore totals — only needed for the issuance modal balance calculation.
     getIssuanceTotals()
       .then((totals) => { if (!cancelled) { setAllTotals(totals); setTotalsLoading(false); } })
       .catch(() => { if (!cancelled) setTotalsLoading(false); });
@@ -1120,24 +887,8 @@ function Inventory() {
   }, []);
 
   useEffect(() => {
-    getManualReceipts().then(setManualRecords).catch(() => {});
-  }, [manualRefresh]);
-
-  useEffect(() => {
     getAdjustments().then(setAdjustments).catch(() => {});
   }, [adjustmentsRefresh]);
-
-  const records = useMemo(() => {
-    // If a manual record has an arcgisObjectId, it supersedes (overrides) the
-    // matching ArcGIS record — prevents duplicates after edit or failed delete.
-    const supersededIds = new Set(
-      manualRecords.filter((r) => r.arcgisObjectId).map((r) => String(r.arcgisObjectId))
-    );
-    return [
-      ...arcgisRecords.filter((r) => !supersededIds.has(String(r.objectid))),
-      ...manualRecords,
-    ].sort((a, b) => (b.date_time_received || 0) - (a.date_time_received || 0));
-  }, [arcgisRecords, manualRecords]);
 
   const categories = useMemo(() => {
     const cats = [...new Set(records.map((r) => r.category).filter(Boolean))].sort();
@@ -1170,46 +921,26 @@ function Inventory() {
   const safePage   = Math.min(page, totalPages);
   const pageItems  = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
-  const closeModal = useCallback(() => setPhotoRecord(null), []);
-
   const handleReceiptSuccess = useCallback((materialName) => {
     setShowAddReceipt(false);
     setReceiptSuccess(`"${materialName}" receipt recorded successfully.`);
-    setManualRefresh((n) => n + 1);
-    // Refresh ArcGIS records — cache was invalidated inside addManualReceipt
-    // after a successful sync, so this fetch returns the newly added feature.
-    setArcgisRefresh((n) => n + 1);
+    setReceiptsRefresh((n) => n + 1);
     getIssuanceTotals().then(setAllTotals).catch(() => {});
-  }, []);
-
-  const handleRetrySync = useCallback(async (record) => {
-    setManualRecords((prev) =>
-      prev.map((r) => r.firestoreId === record.firestoreId ? { ...r, syncStatus: "pending" } : r)
-    );
-    try {
-      await retrySyncReceipt(record.firestoreId, record);
-      setManualRefresh((n) => n + 1);
-      setArcgisRefresh((n) => n + 1);
-    } catch {
-      setManualRefresh((n) => n + 1);
-    }
   }, []);
 
   const handleEditSuccess = useCallback((materialName) => {
     setEditTarget(null);
     setEditSuccess(`"${materialName}" receipt updated.`);
-    setManualRefresh((n) => n + 1);
-    setArcgisRefresh((n) => n + 1);
+    setReceiptsRefresh((n) => n + 1);
   }, []);
 
   const handleDeleteReceipt = useCallback(async () => {
     if (!deleteTarget) return;
     setDeleting(true);
-    await deleteManualReceipt(deleteTarget.firestoreId, deleteTarget.arcgisObjectId);
+    await deleteReceipt(deleteTarget.id);
     setDeleting(false);
     setDeleteTarget(null);
-    setManualRefresh((n) => n + 1);
-    if (deleteTarget.arcgisObjectId) setArcgisRefresh((n) => n + 1);
+    setReceiptsRefresh((n) => n + 1);
   }, [deleteTarget]);
 
   const handleAdjustmentSuccess = useCallback((materialName) => {
@@ -1222,7 +953,6 @@ function Inventory() {
     setIssuanceTarget(null);
     setIssuanceSuccess(`${refNumber} — "${materialName}" issued successfully.`);
     setIssuancesRefresh((n) => n + 1);
-    // Refresh totals so the balance is accurate if the modal is reopened
     getIssuanceTotals().then(setAllTotals).catch(() => {});
   }, []);
 
@@ -1267,7 +997,6 @@ function Inventory() {
       {/* ── Main Panel ────────────────────────────── */}
       <section className="panel" aria-label="Inventory management">
 
-        {/* Panel header */}
         <div className="panel-header">
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <h3>Inventory</h3>
@@ -1298,7 +1027,6 @@ function Inventory() {
           </div>
         </div>
 
-        {/* Tab bar */}
         <div className="inv-tab-bar" role="tablist" aria-label="Inventory sections">
           {[
             { id: "receipts",    label: "Receipts"    },
@@ -1334,12 +1062,11 @@ function Inventory() {
                   />
                   <div className="activity-filters" role="group" aria-label="Filter by category">
                     {categories.map((cat) => (
-                      <button
-                        key={cat}
+                      <button key={cat}
                         className={`filter-btn ${filterCat === cat ? "filter-btn--active" : ""}`}
-                        onClick={() => handleFilter(cat)}
-                        aria-pressed={filterCat === cat}
-                      >{cat}</button>
+                        onClick={() => handleFilter(cat)} aria-pressed={filterCat === cat}>
+                        {cat}
+                      </button>
                     ))}
                   </div>
                 </div>
@@ -1357,17 +1084,10 @@ function Inventory() {
                 <table className="data-table" aria-busy="true" aria-label="Loading inventory data">
                   <thead>
                     <tr>
-                      <th scope="col">Date Received</th>
-                      <th scope="col">Material</th>
-                      <th scope="col">Category</th>
-                      <th scope="col">Qty</th>
-                      <th scope="col">Unit</th>
-                      <th scope="col">Supplier</th>
-                      <th scope="col">Received By</th>
-                      <th scope="col">Remarks</th>
-                      <th scope="col">Photos</th>
-                      {canIssue && <th scope="col">Issue</th>}
-                      {(canEdit || canDelete) && <th scope="col">Actions</th>}
+                      <th>Date Received</th><th>Material</th><th>Category</th>
+                      <th>Qty</th><th>Unit</th><th>Supplier</th><th>Received By</th><th>Remarks</th>
+                      {canIssue && <th>Issue</th>}
+                      {(canEdit || canDelete) && <th>Actions</th>}
                     </tr>
                   </thead>
                   <tbody>
@@ -1381,7 +1101,6 @@ function Inventory() {
                         <td><span className="inv-skeleton-cell inv-skeleton-cell--md" /></td>
                         <td><span className="inv-skeleton-cell inv-skeleton-cell--md" /></td>
                         <td><span className="inv-skeleton-cell inv-skeleton-cell--lg" /></td>
-                        <td><span className="inv-skeleton-cell inv-skeleton-cell--sm" /></td>
                         {canIssue && <td><span className="inv-skeleton-cell inv-skeleton-cell--sm" /></td>}
                         {(canEdit || canDelete) && <td><span className="inv-skeleton-cell inv-skeleton-cell--sm" /></td>}
                       </tr>
@@ -1390,14 +1109,14 @@ function Inventory() {
                 </table>
               ) : error ? (
                 <div className="error-state" style={{ padding: "32px 20px" }}>
-                  <span className="error-icon" role="img" aria-label="Error">!</span>
+                  <span className="error-icon">!</span>
                   <p>Failed to load inventory data</p>
                   <p className="error-detail">{error}</p>
                 </div>
               ) : filtered.length === 0 ? (
                 <div className="empty-state">
                   <p>No records match your filters.</p>
-                  <p className="empty-hint">Submit receipts via the Survey123 Materials Receipt form.</p>
+                  <p className="empty-hint">Use Add Receipt to record new goods received.</p>
                 </div>
               ) : (
                 <table className="data-table">
@@ -1411,20 +1130,17 @@ function Inventory() {
                       <th scope="col">Supplier</th>
                       <th scope="col">Received By</th>
                       <th scope="col">Remarks</th>
-                      <th scope="col">Photos</th>
                       {canIssue && <th scope="col">Issue</th>}
                       {(canEdit || canDelete) && <th scope="col">Actions</th>}
                     </tr>
                   </thead>
                   <tbody>
                     {pageItems.map((r) => (
-                      <tr key={r.objectid}>
+                      <tr key={r.id}>
                         <td className="mono" data-label="Date">{fmt(r.date_time_received)}</td>
                         <td className="bold" data-label="Material">{r.material_name || "—"}</td>
                         <td data-label="Category">
-                          {r.category
-                            ? <span className="inv-category-badge">{r.category}</span>
-                            : "—"}
+                          {r.category ? <span className="inv-category-badge">{r.category}</span> : "—"}
                         </td>
                         <td className="mono" data-label="Qty">{r.quantity_received ?? "—"}</td>
                         <td data-label="Unit">{r.unit || "—"}</td>
@@ -1432,28 +1148,6 @@ function Inventory() {
                         <td data-label="Received By">{r.received_by || "—"}</td>
                         <td data-label="Notes" style={{ maxWidth: 200, whiteSpace: "normal", lineHeight: 1.4 }}>
                           {r.remarks || "—"}
-                        </td>
-                        <td data-label="">
-                          {r.source === "manual" ? (
-                            r.syncStatus === "failed" ? (
-                              <button
-                                className="photo-view-btn"
-                                style={{ background: "rgba(220,53,69,0.1)", color: "#dc3545", borderColor: "rgba(220,53,69,0.3)" }}
-                                onClick={() => handleRetrySync(r)}
-                                aria-label="Retry ArcGIS sync"
-                              >
-                                Retry sync
-                              </button>
-                            ) : r.syncStatus === "pending" ? (
-                              <span style={{ fontSize: 11, color: "var(--text-muted)", fontStyle: "italic" }}>Syncing…</span>
-                            ) : (
-                              <span style={{ color: "var(--text-muted)", fontSize: 12 }}>—</span>
-                            )
-                          ) : (
-                            <button className="photo-view-btn" onClick={() => setPhotoRecord(r)} aria-label={`View photos for ${r.material_name || "receipt"}`}>
-                              View
-                            </button>
-                          )}
                         </td>
                         {canIssue && (
                           <td data-label="">
@@ -1465,26 +1159,22 @@ function Inventory() {
                         )}
                         {(canEdit || canDelete) && (
                           <td data-label="">
-                            {r.source === "manual" ? (
-                              <div style={{ display: "flex", gap: 4 }}>
-                                {canEdit && (
-                                  <button className="photo-view-btn" onClick={() => setEditTarget(r)}
-                                    aria-label={`Edit ${r.material_name || "receipt"}`}>
-                                    Edit
-                                  </button>
-                                )}
-                                {canDelete && (
-                                  <button className="photo-view-btn"
-                                    style={{ color: "#dc3545", borderColor: "rgba(220,53,69,0.3)" }}
-                                    onClick={() => setDeleteTarget(r)}
-                                    aria-label={`Delete ${r.material_name || "receipt"}`}>
-                                    Delete
-                                  </button>
-                                )}
-                              </div>
-                            ) : (
-                              <span style={{ color: "var(--text-muted)", fontSize: 12 }}>—</span>
-                            )}
+                            <div style={{ display: "flex", gap: 4 }}>
+                              {canEdit && (
+                                <button className="photo-view-btn" onClick={() => setEditTarget(r)}
+                                  aria-label={`Edit ${r.material_name || "receipt"}`}>
+                                  Edit
+                                </button>
+                              )}
+                              {canDelete && (
+                                <button className="photo-view-btn"
+                                  style={{ color: "#dc3545", borderColor: "rgba(220,53,69,0.3)" }}
+                                  onClick={() => setDeleteTarget(r)}
+                                  aria-label={`Delete ${r.material_name || "receipt"}`}>
+                                  Delete
+                                </button>
+                              )}
+                            </div>
                           </td>
                         )}
                       </tr>
@@ -1498,35 +1188,26 @@ function Inventory() {
           </>
         )}
 
-        {/* ── Stock Tab ─────────────────────────── */}
         {activeTab === "stock" && (
           <StockTab records={records} allTotals={allTotals} adjustments={adjustments} />
         )}
 
-        {/* ── Issuances Tab ─────────────────────── */}
         {activeTab === "issuances" && (
           <>
-            {!canIssue && (
-              <PermissionNotice department={user?.department} action="record new issuances" />
-            )}
+            {!canIssue && <PermissionNotice department={user?.department} action="record new issuances" />}
             <IssuancesPanel refresh={issuancesRefresh} />
           </>
         )}
 
-        {/* ── Adjustments Tab ───────────────────── */}
         {activeTab === "adjustments" && (
           <>
-            {!canEdit && (
-              <PermissionNotice department={user?.department} action="record stock adjustments" />
-            )}
+            {!canEdit && <PermissionNotice department={user?.department} action="record stock adjustments" />}
             <AdjustmentsPanel adjustments={adjustments} />
           </>
         )}
       </section>
 
       {/* ── Modals ──────────────────────────────── */}
-      {photoRecord && <PhotoModal record={photoRecord} onClose={closeModal} />}
-
       {showAddReceipt && (
         <ReceiptModal user={user} onClose={() => setShowAddReceipt(false)} onSuccess={handleReceiptSuccess} />
       )}

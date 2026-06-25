@@ -1,11 +1,9 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { getRecentSubmissions } from "../services/arcgisService";
+import { getReceipts } from "../services/issuanceService";
 
-const TYPE_META = {
-  WorkSchedule: { color: "#1A74BC", label: "Work Schedule" },
-  DroneSurvey:  { color: "#B8881A", label: "Drone/Survey"  },
-};
+const WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
+const POLL_MS   = 60_000;               // 1 minute
 
 function timeAgo(epoch) {
   if (!epoch) return "";
@@ -17,36 +15,39 @@ function timeAgo(epoch) {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
-function itemKey(item) {
-  return `${item._type}-${item.objectid}`;
+function fmt(epoch) {
+  if (!epoch) return "";
+  return new Date(epoch).toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
 }
 
-function NotificationBell({ onZoomTo }) {
+function NotificationBell() {
   const [items,    setItems]    = useState([]);
   const [open,     setOpen]     = useState(false);
-  const [seenKeys, setSeenKeys] = useState(new Set());
-  const knownKeysRef  = useRef(new Set());
-  const firstLoadRef  = useRef(true);
-  const wrapRef       = useRef(null);
-  const navigate      = useNavigate();
+  const [seenIds,  setSeenIds]  = useState(new Set());
+  const knownIdsRef = useRef(new Set());
+  const firstLoadRef = useRef(true);
+  const wrapRef      = useRef(null);
+  const navigate     = useNavigate();
 
   const fetchAndDiff = useCallback(() => {
-    getRecentSubmissions(24)
-      .then((data) => {
+    getReceipts()
+      .then((rows) => {
+        const cutoff = Date.now() - WINDOW_MS;
+        const recent = rows.filter((r) => (r.date_time_received || 0) >= cutoff);
         if (firstLoadRef.current) {
-          knownKeysRef.current = new Set(data.map(itemKey));
+          knownIdsRef.current = new Set(recent.map((r) => r.objectid));
           firstLoadRef.current = false;
         } else {
-          data.forEach((item) => knownKeysRef.current.add(itemKey(item)));
+          recent.forEach((r) => knownIdsRef.current.add(r.objectid));
         }
-        setItems(data);
+        setItems(recent.sort((a, b) => (b.date_time_received || 0) - (a.date_time_received || 0)));
       })
       .catch(() => {});
   }, []);
 
   useEffect(() => {
     fetchAndDiff();
-    const id = setInterval(fetchAndDiff, 15_000);
+    const id = setInterval(fetchAndDiff, POLL_MS);
     return () => clearInterval(id);
   }, [fetchAndDiff]);
 
@@ -58,23 +59,11 @@ function NotificationBell({ onZoomTo }) {
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  const unseenCount = items.filter((i) => !seenKeys.has(itemKey(i))).length;
+  const unseenCount = items.filter((i) => !seenIds.has(i.id)).length;
 
   const handleToggle = () => {
-    if (!open) setSeenKeys(new Set(items.map(itemKey)));
+    if (!open) setSeenIds(new Set(items.map((i) => i.id)));
     setOpen((o) => !o);
-  };
-
-  const handleItemClick = (item) => {
-    setOpen(false);
-    if (item._type === "WorkSchedule") {
-      navigate("/schedule");
-    } else if (item._geometry && onZoomTo) {
-      onZoomTo(item._geometry, item);
-      navigate("/map");
-    } else {
-      navigate("/operations");
-    }
   };
 
   return (
@@ -98,51 +87,40 @@ function NotificationBell({ onZoomTo }) {
       </button>
 
       {open && (
-        <div className="notif-dropdown" role="listbox" aria-label="Recent notifications">
+        <div className="notif-dropdown" role="listbox" aria-label="Recent receipt notifications">
           <div className="notif-dropdown-header">
-            <span>Notifications</span>
+            <span>Recent Receipts</span>
             <span className="notif-count">{items.length} in last 24h</span>
           </div>
 
           {items.length === 0 ? (
-            <div className="notif-empty">
-              No recent submissions
-              <span style={{ display: "block", fontSize: 11, marginTop: 6, color: "var(--text-muted)", opacity: 0.7 }}>
-                Notifications will appear here once the Survey123 form is connected.
-              </span>
-            </div>
+            <div className="notif-empty">No receipts in the last 24 hours</div>
           ) : (
             <ul className="notif-list">
-              {items.slice(0, 30).map((item, i) => {
-                const meta  = TYPE_META[item._type] || { color: "#B8881A", label: item._type };
-                const title = item._type === "WorkSchedule"
-                  ? (item.project_name || item.project || item.activity || "New work schedule entry")
-                  : (item.operator_name
-                      ? `${item.operation_type || "Submission"} — ${item.operator_name}`
-                      : item.operation_type || "New submission");
-                const isNew      = !seenKeys.has(itemKey(item));
-                const hasLocation = !!item._geometry;
+              {items.slice(0, 30).map((item) => {
+                const isNew = !seenIds.has(item.objectid);
                 return (
                   <li
-                    key={`${item._type}-${item.objectid}-${i}`}
+                    key={item.objectid}
                     role="option"
                     aria-selected={false}
                     className={`notif-item ${isNew ? "notif-item--new" : ""} notif-item--clickable`}
-                    onClick={() => handleItemClick(item)}
+                    onClick={() => { setOpen(false); navigate("/inventory"); }}
                   >
-                    <span className="notif-dot" style={{ background: meta.color }} aria-hidden="true" />
+                    <span className="notif-dot" style={{ background: "#B8881A" }} aria-hidden="true" />
                     <div className="notif-item-body">
-                      <span className="notif-item-title">{title}</span>
-                      <span className="notif-item-meta">
-                        <span className="notif-type-tag" style={{ color: meta.color }}>{meta.label}</span>
-                        <span className="notif-time">{timeAgo(item.CreationDate)}</span>
+                      <span className="notif-item-title">
+                        {item.material_name || "Material received"}
                       </span>
-                      {hasLocation && (
-                        <span className="notif-zoom-hint">Click to view on map</span>
-                      )}
-                      {!hasLocation && (
-                        <span className="notif-zoom-hint">Click to open Operations</span>
-                      )}
+                      <span className="notif-item-meta">
+                        <span className="notif-type-tag" style={{ color: "#B8881A" }}>
+                          {item.quantity_received != null ? `${item.quantity_received} ${item.unit || ""}`.trim() : "Receipt"}
+                        </span>
+                        <span className="notif-time">{timeAgo(item.date_time_received)}</span>
+                      </span>
+                      <span className="notif-zoom-hint">
+                        {item.supplier ? `From: ${item.supplier}` : fmt(item.date_time_received)}
+                      </span>
                     </div>
                   </li>
                 );

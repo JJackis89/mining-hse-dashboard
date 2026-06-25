@@ -213,37 +213,12 @@ service cloud.firestore {
       allow write: if hasDeptPermission('inventory', 'Edit');
     }
 
-    // ── manualReceipts ───────────────────────────────────────────
-    // Goods-received records added manually through the Inventory page.
+    // ── receipts ─────────────────────────────────────────────────
+    // All goods-received records (Firestore is the sole backend — no ArcGIS sync).
     // Same Inventory-page department gate as issuances / inventoryItems.
-    match /manualReceipts/{docId} {
+    match /receipts/{docId} {
       allow read: if request.auth != null;
       allow write: if hasDeptPermission('inventory', 'Create');
-    }
-
-    // ── droneActivities ──────────────────────────────────────────
-    // All authenticated users can read (transparency for other depts).
-    // Create / update / delete require at least 'Create' on the Drone &
-    // Survey Operations page — by default only Survey & GIS holds that
-    // (Full Access: create/update/delete activities, manage progress
-    // records); every other department is 'View Only'. Admins always pass.
-    match /droneActivities/{activityId} {
-      allow read: if request.auth != null;
-      allow write: if hasDeptPermission('droneSurveyOps', 'Create');
-    }
-
-    // ── droneActivityLogs ─────────────────────────────────────────
-    // Immutable audit trail — only append, never edit or delete.
-    // Any authenticated user can read. The create gate intentionally
-    // mirrors droneActivities' write gate one-for-one: every activity
-    // mutation the client performs writes a paired log entry (see
-    // writeLog() in droneActivityService.js), so whoever may create/
-    // update/delete an activity must also be able to log it, or their
-    // (otherwise-valid) activity write fails on the follow-up log write.
-    match /droneActivityLogs/{logId} {
-      allow read: if request.auth != null;
-      allow create: if hasDeptPermission('droneSurveyOps', 'Create');
-      allow update, delete: if false;
     }
 
     // ── departmentPermissions ────────────────────────────────────

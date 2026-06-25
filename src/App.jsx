@@ -25,11 +25,9 @@ import arimaLogo from "./assets/arima-logo.png";
 import Sidebar from "./components/Sidebar";
 import Header from "./components/Header";
 
-const MapViewer      = lazy(() => import("./pages/MapViewer"));
-const Inventory      = lazy(() => import("./pages/Inventory"));
-const DroneSurveyOps = lazy(() => import("./pages/DroneSurveyOps"));
-const WorkSchedule   = lazy(() => import("./pages/WorkSchedule"));
-const AdminPanel     = lazy(() => import("./pages/AdminPanel"));
+const Dashboard  = lazy(() => import("./pages/Dashboard"));
+const Inventory  = lazy(() => import("./pages/Inventory"));
+const AdminPanel = lazy(() => import("./pages/AdminPanel"));
 
 import "./App.css";
 
@@ -460,7 +458,7 @@ function App() {
           <div className="login-header">
             <img src={arimaLogo} alt="ARIMA Resources logo" className="login-logo" />
             <h1>ARIMA RESOURCES OPERATIONS PLATFORM</h1>
-            <p className="login-subtitle">Survey, Drone &amp; Inventory Platform</p>
+            <p className="login-subtitle">Inventory Management System</p>
           </div>
 
           {/* Mode Toggle */}
@@ -668,13 +666,13 @@ function App() {
           <main className="app-content">
             <Suspense fallback={<PageLoader />}>
               <Routes>
-                <Route path="/" element={<Navigate to="/inventory" replace />} />
+                <Route path="/" element={<Navigate to="/dashboard" replace />} />
 
                 <Route
-                  path="/map"
+                  path="/dashboard"
                   element={
-                    <GuardedRoute path="/map">
-                      <MapViewer />
+                    <GuardedRoute path="/dashboard">
+                      <Dashboard />
                     </GuardedRoute>
                   }
                 />
@@ -687,22 +685,6 @@ function App() {
                   }
                 />
                 <Route
-                  path="/operations"
-                  element={
-                    <GuardedRoute path="/operations">
-                      <DroneSurveyOps />
-                    </GuardedRoute>
-                  }
-                />
-                <Route
-                  path="/schedule"
-                  element={
-                    <GuardedRoute path="/schedule">
-                      <WorkSchedule />
-                    </GuardedRoute>
-                  }
-                />
-                <Route
                   path="/admin"
                   element={
                     <GuardedRoute path="/admin">
@@ -711,7 +693,7 @@ function App() {
                   }
                 />
 
-                <Route path="*" element={<Navigate to="/inventory" replace />} />
+                <Route path="*" element={<Navigate to="/dashboard" replace />} />
               </Routes>
             </Suspense>
           </main>

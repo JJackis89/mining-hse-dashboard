@@ -93,38 +93,16 @@ export const DEFAULT_PERMISSION_LEVEL = "View Only";
 // route guards, action gates and audit log all pick it up automatically.
 export const PAGES = [
   {
+    key: "dashboard",
+    label: "Overview",
+    routes: ["/dashboard"],
+    defaults: {},
+  },
+  {
     key: "inventory",
     label: "Inventory",
     routes: ["/inventory"],
     defaults: { "Stores / Inventory": "Full Access" },
-  },
-  {
-    key: "workSchedule",
-    label: "Work Schedule & Progress Monitoring",
-    routes: ["/schedule"],
-    defaults: {
-      "Projects / Construction": "Full Access",
-      "Survey & GIS":            "Edit",
-      "Management":              "View Only",
-    },
-  },
-  {
-    key: "droneSurveyOps",
-    label: "Drone & Survey Operations",
-    routes: ["/operations"],
-    defaults: { "Survey & GIS": "Full Access" },
-  },
-  {
-    key: "mapView",
-    label: "Map View",
-    routes: ["/map"],
-    defaults: { "Survey & GIS": "Full Access" },
-  },
-  {
-    key: "geospatialIT",
-    label: "Geospatial IT & Digital Services",
-    routes: ["/map"],
-    defaults: { "IT & Digital Services": "Full Access" },
   },
   {
     key: "adminModule",
@@ -132,9 +110,7 @@ export const PAGES = [
     routes: ["/admin"],
     // Gated by role:"admin" (see canPerform/routePermission), not by
     // department — "Administrators only" means the platform super-user
-    // tier, not the "Administration" department. Shown in the matrix as
-    // a locked, informational row so the rule is visible and auditable,
-    // but it is never editable and every department defaults to No Access.
+    // tier, not the "Administration" department.
     locked:   true,
     fallback: "No Access",
     defaults: {},
@@ -202,9 +178,7 @@ export function canPerform(user, matrix, pageKey, action) {
 
 // All nav items — Sidebar filters these via canAccessRoute(user, matrix, path)
 export const NAV_ITEMS = [
-  { path: "/inventory",  label: "Inventory",          icon: "box"      },
-  { path: "/map",        label: "Map Viewer",         icon: "map"      },
-  { path: "/operations", label: "Drone & Survey Ops", icon: "target"   },
-  { path: "/schedule",   label: "Work Schedule",      icon: "chart"    },
-  { path: "/admin",      label: "Admin Panel",        icon: "settings" },
+  { path: "/dashboard", label: "Overview",   icon: "chart"    },
+  { path: "/inventory", label: "Inventory",  icon: "box"      },
+  { path: "/admin",     label: "Admin Panel", icon: "settings" },
 ];

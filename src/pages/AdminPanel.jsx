@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { useUser } from "../context/UserContext";
+import { migrateManualReceipts } from "../services/issuanceService";
 import {
   subscribeToUsers,
   updateUserRole,
@@ -24,10 +25,6 @@ import {
   savePagePermissions,
   subscribeToAuditLog,
 } from "../services/departmentPermissionsService";
-import {
-  getAllManualReceipts,
-  retrySyncReceipt,
-} from "../services/issuanceService";
 
 const PAGE_SIZE      = 20;
 const STATUS_OPTIONS = ["Active", "Pending Approval", "Suspended", "Deactivated"];
@@ -135,11 +132,10 @@ function AdminPanel() {
   const [inviteMsg, setInviteMsg]           = useState("");
   const [revoking, setRevoking]             = useState({});
 
-  // ── Sync Log ────────────────────────────────────────────────
-  const [syncLog, setSyncLog]               = useState([]);
-  const [syncLogLoading, setSyncLogLoading] = useState(false);
-  const [syncLogError, setSyncLogError]     = useState(null);
-  const [retrying, setRetrying]             = useState({});
+
+  // ── Data Migration ──────────────────────────────────────────
+  const [migrating, setMigrating]   = useState(false);
+  const [migrateMsg, setMigrateMsg] = useState("");
 
   // ── Department Permissions ──────────────────────────────────
   const [permRows, setPermRows]             = useState([]);
@@ -188,16 +184,6 @@ function AdminPanel() {
     if (activeTab === "invites") loadInvites();
   }, [activeTab, loadInvites]);
 
-  // Sync Log — load when the tab opens
-  useEffect(() => {
-    if (activeTab !== "synclog") return;
-    setSyncLogLoading(true);
-    setSyncLogError(null);
-    getAllManualReceipts()
-      .then(setSyncLog)
-      .catch((err) => setSyncLogError(err.message))
-      .finally(() => setSyncLogLoading(false));
-  }, [activeTab]);
 
   // Department Permissions — subscribe only while the tab is open
   useEffect(() => {
@@ -507,7 +493,6 @@ function AdminPanel() {
             { id: "users",       label: "Users" },
             { id: "invites",     label: "Invite Users" },
             { id: "permissions", label: "Department Permissions" },
-            { id: "synclog",     label: "Sync Log" },
             { id: "diagnostics", label: "Diagnostics" },
           ].map((t) => (
             <button
@@ -1203,6 +1188,41 @@ service cloud.firestore {
                 </div>
               )}
 
+              {/* Data migration */}
+              <h4 className="admin-section-title" style={{ marginTop: 20 }}>Migrate Legacy Receipt Data</h4>
+              <p className="admin-section-desc">
+                One-time migration: copies any records from the old <code>manualReceipts</code> collection
+                into the new <code>receipts</code> collection. Safe to run multiple times — existing records are skipped.
+                Run this once after the inventory-only upgrade to preserve historical data.
+              </p>
+              <div className="diag-test-row">
+                <button
+                  className="admin-refresh-btn"
+                  onClick={async () => {
+                    setMigrating(true);
+                    setMigrateMsg("");
+                    try {
+                      const count = await migrateManualReceipts();
+                      setMigrateMsg(count > 0
+                        ? `Migrated ${count} record${count !== 1 ? "s" : ""} to the receipts collection.`
+                        : "Nothing to migrate — all records already exist in receipts, or manualReceipts is empty.");
+                    } catch (err) {
+                      setMigrateMsg(`Migration failed: ${err.message}`);
+                    } finally {
+                      setMigrating(false);
+                    }
+                  }}
+                  disabled={migrating}
+                >
+                  {migrating ? "Migrating…" : "Run Migration"}
+                </button>
+                {migrateMsg && (
+                  <span className={`admin-sync-msg ${migrateMsg.startsWith("Migration failed") ? "" : ""}`}>
+                    {migrateMsg}
+                  </span>
+                )}
+              </div>
+
               {/* Repair button */}
               <h4 className="admin-section-title" style={{ marginTop: 20 }}>Repair Incomplete Profiles</h4>
               <p className="admin-section-desc">
@@ -1218,128 +1238,6 @@ service cloud.firestore {
             </div>
           );
         })()}
-
-        {/* ── Sync Log tab ──────────────────────── */}
-        {activeTab === "synclog" && (
-          <div style={{ paddingBottom: 16 }}>
-            <div style={{ padding: "12px 16px 0" }}>
-              <p className="admin-section-desc">
-                All manual receipt entries and their ArcGIS synchronization status. Records marked "failed" can be retried here.
-              </p>
-            </div>
-
-            {syncLogLoading && (
-              <div className="loading-state" style={{ minHeight: 120 }}>
-                <div className="spinner" aria-label="Loading" /><p>Loading sync log…</p>
-              </div>
-            )}
-            {!syncLogLoading && syncLogError && (
-              <div className="error-state" style={{ minHeight: 80 }}>
-                <span className="error-icon" role="img" aria-label="Error">!</span>
-                <p className="error-detail">{syncLogError}</p>
-              </div>
-            )}
-            {!syncLogLoading && !syncLogError && syncLog.length === 0 && (
-              <div className="empty-state" style={{ padding: "40px 20px" }}>
-                <p>No manual receipts on record.</p>
-              </div>
-            )}
-            {!syncLogLoading && !syncLogError && syncLog.length > 0 && (
-              <>
-                <div className="table-scroll" style={{ maxHeight: 560 }}>
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th scope="col">Date</th>
-                        <th scope="col">Material</th>
-                        <th scope="col">Qty</th>
-                        <th scope="col">Unit</th>
-                        <th scope="col">Sync Status</th>
-                        <th scope="col">ArcGIS OID</th>
-                        <th scope="col">Added By</th>
-                        <th scope="col">Retry</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {syncLog.map((r) => {
-                        const statusColor = r.syncStatus === "synced" ? "#1E9E52"
-                          : r.syncStatus === "failed" ? "#dc3545"
-                          : "var(--warning)";
-                        const statusBg = r.syncStatus === "synced" ? "rgba(30,158,82,0.10)"
-                          : r.syncStatus === "failed" ? "rgba(220,53,69,0.10)"
-                          : "rgba(212,130,10,0.10)";
-                        const isRetrying = retrying[r.firestoreId];
-                        return (
-                          <tr key={r.firestoreId}>
-                            <td className="mono" style={{ fontSize: 12, whiteSpace: "nowrap" }}>
-                              {r.date_time_received ? fmt(r.date_time_received) : fmt(r.createdAt)}
-                            </td>
-                            <td className="bold">{r.material_name || "—"}</td>
-                            <td className="mono">{r.quantity_received ?? "—"}</td>
-                            <td>{r.unit || "—"}</td>
-                            <td>
-                              <span style={{
-                                fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 10,
-                                background: statusBg, color: statusColor,
-                              }}>
-                                {r.syncStatus || "unknown"}
-                              </span>
-                            </td>
-                            <td className="mono" style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                              {r.arcgisObjectId ?? "—"}
-                            </td>
-                            <td style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                              {r.addedByEmail || r.received_by || "—"}
-                            </td>
-                            <td>
-                              {r.syncStatus === "failed" && (
-                                <button
-                                  className="admin-refresh-btn"
-                                  disabled={isRetrying}
-                                  onClick={async () => {
-                                    setRetrying((p) => ({ ...p, [r.firestoreId]: true }));
-                                    setSyncLog((prev) =>
-                                      prev.map((x) => x.firestoreId === r.firestoreId ? { ...x, syncStatus: "pending" } : x)
-                                    );
-                                    try {
-                                      const oid = await retrySyncReceipt(r.firestoreId, r);
-                                      setSyncLog((prev) =>
-                                        prev.map((x) => x.firestoreId === r.firestoreId
-                                          ? { ...x, syncStatus: "synced", arcgisObjectId: oid }
-                                          : x)
-                                      );
-                                    } catch {
-                                      setSyncLog((prev) =>
-                                        prev.map((x) => x.firestoreId === r.firestoreId ? { ...x, syncStatus: "failed" } : x)
-                                      );
-                                    } finally {
-                                      setRetrying((p) => { const n = { ...p }; delete n[r.firestoreId]; return n; });
-                                    }
-                                  }}
-                                >
-                                  {isRetrying ? "Retrying…" : "Retry"}
-                                </button>
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="admin-panel-footer">
-                  {syncLog.length} record{syncLog.length !== 1 ? "s" : ""}
-                  {" · "}
-                  {syncLog.filter((r) => r.syncStatus === "synced").length} synced
-                  {" · "}
-                  {syncLog.filter((r) => r.syncStatus === "failed").length} failed
-                  {" · "}
-                  {syncLog.filter((r) => r.syncStatus === "pending").length} pending
-                </div>
-              </>
-            )}
-          </div>
-        )}
 
         {/* ── Department Permissions tab ────────── */}
         {activeTab === "permissions" && (

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getMaterials } from "../services/arcgisService";
+import { getReceipts } from "../services/issuanceService";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend,
@@ -68,7 +68,7 @@ function Dashboard() {
 
   useEffect(() => {
     let cancelled = false;
-    getMaterials()
+    getReceipts()
       .then((rows) => {
         if (!cancelled) setMaterials(rows.map((r) => ({
           ...r,
