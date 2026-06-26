@@ -125,7 +125,7 @@ function Dashboard() {
       monthMap[key] = { month: key, Receipts: 0 };
     }
     receipts.forEach((r) => {
-      const ts  = r.date_time_received || (r.createdAt?.toMillis?.() || r.createdAt);
+      const ts  = r.date_time_received;
       const key = ts ? new Date(ts).toLocaleDateString("en-GB", { month: "short", year: "2-digit" }) : null;
       if (key && monthMap[key]) monthMap[key].Receipts++;
     });
@@ -140,7 +140,7 @@ function Dashboard() {
   }, [receipts]);
 
   // Recent receipts table
-  const sorted     = useMemo(() => [...receipts].sort((a, b) => (b.date_time_received || 0) - (a.date_time_received || 0)), [receipts]);
+  const sorted     = useMemo(() => [...receipts].sort((a, b) => (b.date_time_received ?? 0) - (a.date_time_received ?? 0)), [receipts]);
   const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const safePage   = Math.min(page, totalPages);
   const pageItems  = sorted.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
@@ -277,7 +277,7 @@ function Dashboard() {
                 <tbody>
                   {pageItems.map((r) => (
                     <tr key={r.id}>
-                      <td className="mono" style={{ whiteSpace: "nowrap" }}>{fmt(r.date_time_received || r.createdAt)}</td>
+                      <td className="mono" style={{ whiteSpace: "nowrap" }}>{fmt(r.date_time_received)}</td>
                       <td className="bold">{r.material_name || "—"}</td>
                       <td>{r.category || "—"}</td>
                       <td className="mono">{r.quantity_received ?? "—"}</td>
