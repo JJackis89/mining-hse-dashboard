@@ -115,7 +115,7 @@ function Dashboard() {
   // KPI aggregates
   const totalReceipts  = receipts.length;
   const totalQty       = receipts.reduce((s, r) => s + (r.quantity_received || 0), 0);
-  const matCategories  = new Set(receipts.map((r) => r.category).filter(Boolean)).size;
+  const matTypes       = new Set(receipts.map((r) => typeMap[r.material_name] || "Consumable")).size;
   const matSuppliers   = new Set(receipts.map((r) => r.supplier).filter(Boolean)).size;
 
   // Monthly trend (last 6 months)
@@ -136,9 +136,7 @@ function Dashboard() {
   }, [receipts]);
 
   // Receipts by item type (Consumable / Non-Consumable)
-  const typeMap = useMemo(() =>
-    Object.fromEntries(inventoryItems.map((i) => [i.materialName, i.itemType || "Consumable"])),
-  [inventoryItems]);
+  const typeMap = Object.fromEntries(inventoryItems.map((i) => [i.materialName, i.itemType || "Consumable"]));
 
   const catData = useMemo(() => {
     const map = { Consumable: 0, "Non-Consumable": 0 };
@@ -219,7 +217,7 @@ function Dashboard() {
       <section className="kpi-grid" aria-label="Key performance indicators">
         {[
           { title: "Total Receipts",  value: totalReceipts,             sub: "Inventory entries",       color: "#B8881A" },
-          { title: "Categories",      value: matCategories,             sub: "Distinct material types", color: "#1A74BC" },
+          { title: "Item Types",       value: matTypes,                  sub: "Consumable & Non-Consumable", color: "#1A74BC" },
           { title: "Total Qty",       value: totalQty.toLocaleString(), sub: "Units received",          color: "#1E9E52" },
           { title: "Suppliers",       value: matSuppliers,              sub: "Unique suppliers",        color: "#7D3C98" },
         ].map((kpi, i) => (

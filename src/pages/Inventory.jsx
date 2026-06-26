@@ -1259,10 +1259,10 @@ function Inventory() {
 
   const totals = useMemo(() => ({
     count:     filtered.length,
-    categories: new Set(filtered.map((r) => r.category).filter(Boolean)).size,
+    types:     new Set(filtered.map((r) => itemTypeMap[r.material_name] || "Consumable")).size,
     totalQty:  filtered.reduce((s, r) => s + (r.quantity_received || 0), 0),
     suppliers: new Set(filtered.map((r) => r.supplier).filter(Boolean)).size,
-  }), [filtered]);
+  }), [filtered, itemTypeMap]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage   = Math.min(page, totalPages);
@@ -1339,7 +1339,7 @@ function Inventory() {
       <section className="kpi-grid" style={{ marginBottom: 20 }}>
         {[
           { title: "Receipts",   value: recordsLoading ? "—" : totals.count,                      sub: "Filtered entries",   color: "#B8881A" },
-          { title: "Categories", value: recordsLoading ? "—" : totals.categories,                 sub: "Material types",     color: "#1A74BC" },
+          { title: "Item Types",  value: recordsLoading ? "—" : totals.types,                    sub: "Consumable & Non-Consumable", color: "#1A74BC" },
           { title: "Total Qty",  value: recordsLoading ? "—" : totals.totalQty.toLocaleString(),  sub: "Units received",     color: "#1E9E52" },
           { title: "Suppliers",  value: recordsLoading ? "—" : totals.suppliers,                  sub: "Unique suppliers",   color: "#7D3C98" },
         ].map((kpi, i) => (
