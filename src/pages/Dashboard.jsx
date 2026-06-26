@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
 import { getReceipts, getIssuanceTotals, getAdjustments, getAllInventoryItems } from "../services/issuanceService";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -39,6 +40,7 @@ function Pagination({ page, totalPages, onChange }) {
 }
 
 function Dashboard() {
+  const navigate = useNavigate();
   const [receipts, setReceipts]         = useState([]);
   const [issuanceTotals, setTotals]     = useState({});
   const [adjustments, setAdjustments]   = useState([]);
@@ -177,7 +179,14 @@ function Dashboard() {
                     </span>
                   </li>
                 ))}
-                {lowStockAlerts.length > 4 && <li style={{ color: "var(--text-muted)", fontStyle: "italic" }}>+{lowStockAlerts.length - 4} more…</li>}
+                {lowStockAlerts.length > 4 && (
+                  <li>
+                    <button onClick={() => navigate("/inventory")}
+                      style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--accent-orange)", fontStyle: "italic", fontSize: "inherit" }}>
+                      +{lowStockAlerts.length - 4} more…
+                    </button>
+                  </li>
+                )}
               </ul>
             </div>
           )}
