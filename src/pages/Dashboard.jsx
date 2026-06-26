@@ -133,12 +133,19 @@ function Dashboard() {
     return Object.values(monthMap);
   }, [receipts]);
 
-  // Category breakdown
+  // Receipts by item type (Consumable / Non-Consumable)
+  const typeMap = useMemo(() =>
+    Object.fromEntries(inventoryItems.map((i) => [i.materialName, i.itemType || "Consumable"])),
+  [inventoryItems]);
+
   const catData = useMemo(() => {
-    const map = {};
-    receipts.forEach((r) => { const c = r.category || "Other"; map[c] = (map[c] || 0) + 1; });
-    return Object.entries(map).map(([name, value]) => ({ name, value }));
-  }, [receipts]);
+    const map = { Consumable: 0, "Non-Consumable": 0 };
+    receipts.forEach((r) => {
+      const t = typeMap[r.material_name] || "Consumable";
+      map[t] = (map[t] || 0) + 1;
+    });
+    return Object.entries(map).filter(([, v]) => v > 0).map(([name, value]) => ({ name, value }));
+  }, [receipts, typeMap]);
 
   // Recent receipts table
   const sorted     = useMemo(() => [...receipts].sort((a, b) => (b.date_time_received ?? 0) - (a.date_time_received ?? 0)), [receipts]);
@@ -234,8 +241,8 @@ function Dashboard() {
           </div>
         </section>
 
-        <section className="panel chart-panel" aria-label="Receipts by category">
-          <div className="panel-header"><h3>Receipts by Category</h3></div>
+        <section className="panel chart-panel" aria-label="Receipts by item type">
+          <div className="panel-header"><h3>Receipts by Type</h3></div>
           <div className="chart-wrap">
             {catData.length === 0 ? (
               <div className="empty-state" style={{ minHeight: 220 }}><p>No data yet.</p></div>
@@ -243,7 +250,9 @@ function Dashboard() {
               <ResponsiveContainer width="100%" height={220}>
                 <PieChart>
                   <Pie data={catData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={75} label>
-                    {catData.map((_, idx) => <Cell key={idx} fill={CAT_COLORS[idx % CAT_COLORS.length]} />)}
+                    {catData.map((entry) => (
+                      <Cell key={entry.name} fill={entry.name === "Consumable" ? "#1A74BC" : "#7D3C98"} />
+                    ))}
                   </Pie>
                   <Tooltip contentStyle={TOOLTIP_STYLE} />
                   <Legend wrapperStyle={{ fontSize: 11, color: "#4D5A6E" }} />
