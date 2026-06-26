@@ -1,149 +1,210 @@
-import { useEffect, useState } from "react";
-import { getReceipts } from "../services/issuanceService";
+import { useEffect, useState, useMemo } from "react";
+import { getReceipts, getIssuanceTotals, getAdjustments, getAllInventoryItems } from "../services/issuanceService";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend,
 } from "recharts";
 
 const TOOLTIP_STYLE = {
-  background: "#ffffff",
-  border: "1px solid #DDE1E8",
-  borderRadius: 6,
-  fontSize: 12,
-  color: "#1A2332",
+  background: "#ffffff", border: "1px solid #DDE1E8",
+  borderRadius: 6, fontSize: 12, color: "#1A2332",
 };
-
 const CAT_COLORS = ["#B8881A", "#1A74BC", "#1E9E52", "#7D3C98", "#C0392B", "#D4820A"];
-const PAGE_SIZE = 10;
+const ADJ_ADDS   = new Set(["Correction (Add)", "Transfer In"]);
+const PAGE_SIZE  = 10;
 
 function fmt(ts) {
   if (!ts) return "—";
   return new Date(ts).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 }
 
-
 function Pagination({ page, totalPages, onChange }) {
   if (totalPages <= 1) return null;
-  const pages = Array.from({ length: totalPages }, (_, i) => i + 1);
+  const pages   = Array.from({ length: totalPages }, (_, i) => i + 1);
   const visible = pages.filter((p) => p === 1 || p === totalPages || Math.abs(p - page) <= 1);
   return (
-    <div className="pagination" role="navigation" aria-label="Table pagination">
+    <div className="pagination" role="navigation" aria-label="Pagination">
       <span className="pagination-info">Page {page} of {totalPages}</span>
       <div className="pagination-controls">
-        <button
-          className="pagination-btn"
-          onClick={() => onChange(page - 1)}
-          disabled={page === 1}
-          aria-label="Previous page"
-        >&#8249;</button>
+        <button className="pagination-btn" onClick={() => onChange(page - 1)} disabled={page === 1}>&#8249;</button>
         {visible.reduce((acc, p, i) => {
-          if (i > 0 && p - visible[i - 1] > 1) acc.push(<span key={`gap-${p}`} style={{ padding: "4px 6px", color: "var(--text-muted)" }}>…</span>);
-          acc.push(
-            <button
-              key={p}
-              className={`pagination-btn ${p === page ? "pagination-btn--active" : ""}`}
-              onClick={() => onChange(p)}
-              aria-label={`Page ${p}`}
-              aria-current={p === page ? "page" : undefined}
-            >{p}</button>
-          );
+          if (i > 0 && p - visible[i - 1] > 1) acc.push(<span key={`g-${p}`} style={{ padding: "4px 6px", color: "var(--text-muted)" }}>…</span>);
+          acc.push(<button key={p} className={`pagination-btn ${p === page ? "pagination-btn--active" : ""}`} onClick={() => onChange(p)}>{p}</button>);
           return acc;
         }, [])}
-        <button
-          className="pagination-btn"
-          onClick={() => onChange(page + 1)}
-          disabled={page === totalPages}
-          aria-label="Next page"
-        >&#8250;</button>
+        <button className="pagination-btn" onClick={() => onChange(page + 1)} disabled={page === totalPages}>&#8250;</button>
       </div>
     </div>
   );
 }
 
 function Dashboard() {
-  const [materials, setMaterials] = useState([]);
-  const [loading, setLoading]     = useState(true);
-  const [error, setError]         = useState(null);
-  const [page, setPage]           = useState(1);
+  const [receipts, setReceipts]         = useState([]);
+  const [issuanceTotals, setTotals]     = useState({});
+  const [adjustments, setAdjustments]   = useState([]);
+  const [inventoryItems, setItems]      = useState([]);
+  const [loading, setLoading]           = useState(true);
+  const [error, setError]               = useState(null);
+  const [page, setPage]                 = useState(1);
+  const [now]                           = useState(() => Date.now());
 
   useEffect(() => {
     let cancelled = false;
-    getReceipts()
-      .then((rows) => {
-        if (!cancelled) setMaterials(rows.map((r) => ({
-          ...r,
-          _total: r.quantity_received != null && r.unit_cost != null
-            ? r.quantity_received * r.unit_cost : null,
-        })));
+    Promise.all([getReceipts(), getIssuanceTotals(), getAdjustments(), getAllInventoryItems()])
+      .then(([r, t, a, items]) => {
+        if (cancelled) return;
+        setReceipts(r);
+        setTotals(t);
+        setAdjustments(a);
+        setItems(items);
       })
       .catch((err) => { if (!cancelled) setError(err.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, []);
 
-  if (loading) {
-    return (
-      <div className="page-dashboard">
-        <div className="loading-state"><div className="spinner" /><p>Loading dashboard…</p></div>
-      </div>
-    );
-  }
+  // Stock balances per material
+  const stockBalances = useMemo(() => {
+    const map = {};
+    receipts.forEach((r) => {
+      const name = r.material_name;
+      if (!name) return;
+      if (!map[name]) map[name] = { received: 0, issued: 0, adjusted: 0, unit: r.unit || "" };
+      map[name].received += Number(r.quantity_received) || 0;
+      if (!map[name].unit && r.unit) map[name].unit = r.unit;
+    });
+    Object.entries(issuanceTotals).forEach(([name, qty]) => {
+      if (map[name]) map[name].issued = qty;
+    });
+    adjustments.forEach((adj) => {
+      const name = adj.materialName;
+      if (!name) return;
+      if (!map[name]) map[name] = { received: 0, issued: 0, adjusted: 0, unit: adj.unit || "" };
+      map[name].adjusted += (ADJ_ADDS.has(adj.adjustmentType) ? 1 : -1) * (Number(adj.quantity) || 0);
+    });
+    return map;
+  }, [receipts, issuanceTotals, adjustments]);
 
-  if (error) {
-    return (
-      <div className="page-dashboard">
-        <div className="error-state">
-          <span className="error-icon" role="img" aria-label="Error">!</span>
-          <p>Failed to load dashboard data</p>
-          <p className="error-detail">{error}</p>
-        </div>
-      </div>
-    );
-  }
+  // Low-stock alerts — items below reorder point
+  const lowStockAlerts = useMemo(() => {
+    return inventoryItems
+      .map((item) => {
+        const bal = stockBalances[item.materialName];
+        if (!bal) return null;
+        const balance = bal.received + bal.adjusted - bal.issued;
+        const rp = Number(item.reorderPoint) || 0;
+        if (balance <= rp) return { ...item, balance, reorderPoint: rp };
+        return null;
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.balance - b.balance);
+  }, [inventoryItems, stockBalances]);
 
-  // ── Aggregates ────────────────────────────────────────────
-  const totalReceipts = materials.length;
-  const totalQty      = materials.reduce((s, r) => s + (r.quantity_received || 0), 0);
-  const matCategories = new Set(materials.map((r) => r.category).filter(Boolean)).size;
-  const matSuppliers  = new Set(materials.map((r) => r.supplier).filter(Boolean)).size;
+  // Expiry alerts — receipts expiring within 30 days
+  const expiryAlerts = useMemo(() => {
+    const cutoff = now + 30 * 24 * 60 * 60 * 1000;
+    return receipts
+      .filter((r) => r.expiryDate && r.expiryDate <= cutoff)
+      .sort((a, b) => a.expiryDate - b.expiryDate)
+      .slice(0, 5);
+  }, [receipts, now]);
 
-  const sorted = [...materials].sort((a, b) => (b.date_time_received || 0) - (a.date_time_received || 0));
-  const totalPages   = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
-  const safePage     = Math.min(page, totalPages);
-  const pageItems    = sorted.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+  // KPI aggregates
+  const totalReceipts  = receipts.length;
+  const totalQty       = receipts.reduce((s, r) => s + (r.quantity_received || 0), 0);
+  const matCategories  = new Set(receipts.map((r) => r.category).filter(Boolean)).size;
+  const matSuppliers   = new Set(receipts.map((r) => r.supplier).filter(Boolean)).size;
 
-  // Monthly receipts trend
-  const monthMap = {};
-  const now = new Date();
-  for (let m = 5; m >= 0; m--) {
-    const d = new Date(now.getFullYear(), now.getMonth() - m, 1);
-    const key = d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
-    monthMap[key] = { month: key, Receipts: 0 };
-  }
-  materials.forEach((r) => {
-    const key = r.date_time_received
-      ? new Date(r.date_time_received).toLocaleDateString("en-GB", { month: "short", year: "2-digit" })
-      : null;
-    if (key && monthMap[key]) monthMap[key].Receipts++;
-  });
-  const trendData = Object.values(monthMap);
+  // Monthly trend (last 6 months)
+  const trendData = useMemo(() => {
+    const now     = new Date();
+    const monthMap = {};
+    for (let m = 5; m >= 0; m--) {
+      const d   = new Date(now.getFullYear(), now.getMonth() - m, 1);
+      const key = d.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
+      monthMap[key] = { month: key, Receipts: 0 };
+    }
+    receipts.forEach((r) => {
+      const ts  = r.date_time_received || (r.createdAt?.toMillis?.() || r.createdAt);
+      const key = ts ? new Date(ts).toLocaleDateString("en-GB", { month: "short", year: "2-digit" }) : null;
+      if (key && monthMap[key]) monthMap[key].Receipts++;
+    });
+    return Object.values(monthMap);
+  }, [receipts]);
 
-  // Receipts by category
-  const catCounts = {};
-  materials.forEach((r) => { const c = r.category || "Other"; catCounts[c] = (catCounts[c] || 0) + 1; });
-  const catData = Object.entries(catCounts).map(([name, value]) => ({ name, value }));
+  // Category breakdown
+  const catData = useMemo(() => {
+    const map = {};
+    receipts.forEach((r) => { const c = r.category || "Other"; map[c] = (map[c] || 0) + 1; });
+    return Object.entries(map).map(([name, value]) => ({ name, value }));
+  }, [receipts]);
 
+  // Recent receipts table
+  const sorted     = useMemo(() => [...receipts].sort((a, b) => (b.date_time_received || 0) - (a.date_time_received || 0)), [receipts]);
+  const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
+  const safePage   = Math.min(page, totalPages);
+  const pageItems  = sorted.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+
+  if (loading) return <div className="page-dashboard"><div className="loading-state"><div className="spinner" /><p>Loading dashboard…</p></div></div>;
+  if (error)   return <div className="page-dashboard"><div className="error-state"><span className="error-icon">!</span><p>Failed to load dashboard</p><p className="error-detail">{error}</p></div></div>;
 
   return (
     <div className="page-dashboard">
 
-      {/* ══ KPI Cards ══════════════════════════════════════ */}
+      {/* ── Alert banners ─────────────────────────── */}
+      {(lowStockAlerts.length > 0 || expiryAlerts.length > 0) && (
+        <div className="dash-alert-row">
+          {lowStockAlerts.length > 0 && (
+            <div className="dash-alert-card dash-alert-card--warn">
+              <div className="dash-alert-header">
+                <span className="dash-alert-icon">⚠</span>
+                <strong>{lowStockAlerts.length} Low Stock Alert{lowStockAlerts.length !== 1 ? "s" : ""}</strong>
+              </div>
+              <ul className="dash-alert-list">
+                {lowStockAlerts.slice(0, 4).map((item) => (
+                  <li key={item.id}>
+                    <span className="bold">{item.materialName}</span>
+                    <span style={{ color: item.balance <= 0 ? "#dc3545" : "var(--warning)", marginLeft: 8 }}>
+                      {item.balance <= 0 ? "Out of stock" : `${item.balance} ${item.unit} (reorder ≤ ${item.reorderPoint})`}
+                    </span>
+                  </li>
+                ))}
+                {lowStockAlerts.length > 4 && <li style={{ color: "var(--text-muted)", fontStyle: "italic" }}>+{lowStockAlerts.length - 4} more…</li>}
+              </ul>
+            </div>
+          )}
+          {expiryAlerts.length > 0 && (
+            <div className="dash-alert-card dash-alert-card--danger">
+              <div className="dash-alert-header">
+                <span className="dash-alert-icon">⏱</span>
+                <strong>{expiryAlerts.length} Item{expiryAlerts.length !== 1 ? "s" : ""} Expiring Soon</strong>
+              </div>
+              <ul className="dash-alert-list">
+                {expiryAlerts.map((r) => {
+                  const isExpired = r.expiryDate <= now;
+                  const daysLeft  = Math.ceil((r.expiryDate - now) / (24 * 60 * 60 * 1000));
+                  return (
+                    <li key={r.id}>
+                      <span className="bold">{r.material_name}</span>
+                      <span style={{ color: isExpired ? "#dc3545" : "#D4820A", marginLeft: 8 }}>
+                        {isExpired ? "Expired" : `expires in ${daysLeft}d`}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── KPI Cards ──────────────────────────────── */}
       <section className="kpi-grid" aria-label="Key performance indicators">
         {[
-          { title: "Total Receipts", value: totalReceipts,             sub: "Inventory entries",       color: "#B8881A" },
-          { title: "Categories",     value: matCategories,             sub: "Distinct material types", color: "#1A74BC" },
-          { title: "Total Qty",      value: totalQty.toLocaleString(), sub: "Units received",          color: "#1E9E52" },
-          { title: "Suppliers",      value: matSuppliers,              sub: "Unique suppliers",        color: "#7D3C98" },
+          { title: "Total Receipts",  value: totalReceipts,             sub: "Inventory entries",       color: "#B8881A" },
+          { title: "Categories",      value: matCategories,             sub: "Distinct material types", color: "#1A74BC" },
+          { title: "Total Qty",       value: totalQty.toLocaleString(), sub: "Units received",          color: "#1E9E52" },
+          { title: "Suppliers",       value: matSuppliers,              sub: "Unique suppliers",        color: "#7D3C98" },
         ].map((kpi, i) => (
           <div className="kpi-card" key={i}>
             <div className="kpi-icon" style={{ background: kpi.color + "18", color: kpi.color }} aria-hidden="true" />
@@ -156,9 +217,8 @@ function Dashboard() {
         ))}
       </section>
 
-      {/* ══ Charts ══════════════════════════════════════════ */}
+      {/* ── Charts ─────────────────────────────────── */}
       <div className="dashboard-charts" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))" }}>
-
         <section className="panel chart-panel" aria-label="Monthly receipts trend">
           <div className="panel-header"><h3>Monthly Receipts (6 Months)</h3></div>
           <div className="chart-wrap">
@@ -182,9 +242,7 @@ function Dashboard() {
               <ResponsiveContainer width="100%" height={220}>
                 <PieChart>
                   <Pie data={catData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={75} label>
-                    {catData.map((_, idx) => (
-                      <Cell key={idx} fill={CAT_COLORS[idx % CAT_COLORS.length]} />
-                    ))}
+                    {catData.map((_, idx) => <Cell key={idx} fill={CAT_COLORS[idx % CAT_COLORS.length]} />)}
                   </Pie>
                   <Tooltip contentStyle={TOOLTIP_STYLE} />
                   <Legend wrapperStyle={{ fontSize: 11, color: "#4D5A6E" }} />
@@ -193,11 +251,9 @@ function Dashboard() {
             )}
           </div>
         </section>
-
-
       </div>
 
-      {/* ══ Recent Receipts table ════════════════════════════ */}
+      {/* ── Recent Receipts ─────────────────────────── */}
       <section className="panel" aria-label="Materials receipts table">
         <div className="panel-header">
           <h3>Materials Receipts</h3>
@@ -206,7 +262,7 @@ function Dashboard() {
         {sorted.length === 0 ? (
           <div className="empty-state" style={{ padding: "32px 16px" }}>
             <p>No receipts yet.</p>
-            <p className="empty-hint">Submit via the Survey123 Materials Receipt form.</p>
+            <p className="empty-hint">Use Add Receipt in Inventory to record goods received.</p>
           </div>
         ) : (
           <>
@@ -214,19 +270,14 @@ function Dashboard() {
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th scope="col">Date</th>
-                    <th scope="col">Material</th>
-                    <th scope="col">Category</th>
-                    <th scope="col">Qty</th>
-                    <th scope="col">Unit</th>
-                    <th scope="col">Supplier</th>
-                    <th scope="col">Received By</th>
+                    <th>Date</th><th>Material</th><th>Category</th>
+                    <th>Qty</th><th>Unit</th><th>Supplier</th><th>Received By</th>
                   </tr>
                 </thead>
                 <tbody>
                   {pageItems.map((r) => (
-                    <tr key={r.objectid}>
-                      <td className="mono" style={{ whiteSpace: "nowrap" }}>{fmt(r.date_time_received)}</td>
+                    <tr key={r.id}>
+                      <td className="mono" style={{ whiteSpace: "nowrap" }}>{fmt(r.date_time_received || r.createdAt)}</td>
                       <td className="bold">{r.material_name || "—"}</td>
                       <td>{r.category || "—"}</td>
                       <td className="mono">{r.quantity_received ?? "—"}</td>
@@ -242,7 +293,6 @@ function Dashboard() {
           </>
         )}
       </section>
-
     </div>
   );
 }

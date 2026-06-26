@@ -226,6 +226,30 @@ service cloud.firestore {
       allow write: if hasDeptPermission('inventory', 'Create');
     }
 
+    // ── suppliers ────────────────────────────────────────────────
+    // Supplier directory — any signed-in user can read; writes require
+    // at least Create on the Suppliers page.
+    match /suppliers/{docId} {
+      allow read: if request.auth != null;
+      allow write: if hasDeptPermission('suppliers', 'Create');
+    }
+
+    // ── stockTakes ───────────────────────────────────────────────
+    // Stock take / cycle count records. Any signed-in user can read;
+    // writes require Create on the stockTake page.
+    match /stockTakes/{docId} {
+      allow read: if request.auth != null;
+      allow write: if hasDeptPermission('stockTake', 'Create');
+    }
+
+    // ── appSettings ──────────────────────────────────────────────
+    // System-wide configuration (approval thresholds, defaults).
+    // Any authenticated user can read; only admins can write.
+    match /appSettings/{docId} {
+      allow read:  if request.auth != null;
+      allow write: if isAdmin();
+    }
+
     // ── departmentPermissions ────────────────────────────────────
     // The live department × page permission matrix that
     // hasDeptPermission() above (and canPerform()/canAccessRoute() on

@@ -105,6 +105,24 @@ export const PAGES = [
     defaults: { "Stores / Inventory": "Full Access" },
   },
   {
+    key: "suppliers",
+    label: "Supplier Directory",
+    routes: ["/suppliers"],
+    defaults: { "Stores / Inventory": "Full Access", "Finance": "View Only" },
+  },
+  {
+    key: "stockTake",
+    label: "Stock Take",
+    routes: ["/stocktake"],
+    defaults: { "Stores / Inventory": "Full Access" },
+  },
+  {
+    key: "reports",
+    label: "Reports",
+    routes: ["/reports"],
+    defaults: { "Management": "Full Access", "Finance": "Full Access", "Stores / Inventory": "Full Access" },
+  },
+  {
     key: "adminModule",
     label: "Administration Module",
     routes: ["/admin"],
@@ -178,7 +196,10 @@ export function canPerform(user, matrix, pageKey, action) {
 
 // All nav items — Sidebar filters these via canAccessRoute(user, matrix, path)
 export const NAV_ITEMS = [
-  { path: "/dashboard", label: "Overview",   icon: "chart"    },
-  { path: "/inventory", label: "Inventory",  icon: "box"      },
-  { path: "/admin",     label: "Admin Panel", icon: "settings" },
+  { path: "/dashboard",  label: "Overview",         icon: "chart"    },
+  { path: "/inventory",  label: "Inventory",         icon: "box"      },
+  { path: "/suppliers",  label: "Suppliers",         icon: "truck"    },
+  { path: "/stocktake",  label: "Stock Take",        icon: "clipboard" },
+  { path: "/reports",    label: "Reports",           icon: "bar"      },
+  { path: "/admin",      label: "Admin Panel",       icon: "settings" },
 ];

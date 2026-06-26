@@ -27,6 +27,9 @@ import Header from "./components/Header";
 
 const Dashboard  = lazy(() => import("./pages/Dashboard"));
 const Inventory  = lazy(() => import("./pages/Inventory"));
+const Suppliers  = lazy(() => import("./pages/Suppliers"));
+const StockTake  = lazy(() => import("./pages/StockTake"));
+const Reports    = lazy(() => import("./pages/Reports"));
 const AdminPanel = lazy(() => import("./pages/AdminPanel"));
 
 import "./App.css";
@@ -656,6 +659,30 @@ function App() {
                   element={
                     <GuardedRoute path="/inventory">
                       <Inventory />
+                    </GuardedRoute>
+                  }
+                />
+                <Route
+                  path="/suppliers"
+                  element={
+                    <GuardedRoute path="/suppliers">
+                      <Suppliers />
+                    </GuardedRoute>
+                  }
+                />
+                <Route
+                  path="/stocktake"
+                  element={
+                    <GuardedRoute path="/stocktake">
+                      <StockTake />
+                    </GuardedRoute>
+                  }
+                />
+                <Route
+                  path="/reports"
+                  element={
+                    <GuardedRoute path="/reports">
+                      <Reports />
                     </GuardedRoute>
                   }
                 />

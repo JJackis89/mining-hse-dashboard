@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { useUser } from "../context/UserContext";
-import { migrateManualReceipts } from "../services/issuanceService";
+import { migrateManualReceipts, getInventorySettings, saveInventorySettings } from "../services/issuanceService";
 import {
   subscribeToUsers,
   updateUserRole,
@@ -137,6 +137,12 @@ function AdminPanel() {
   const [migrating, setMigrating]   = useState(false);
   const [migrateMsg, setMigrateMsg] = useState("");
 
+  // ── Inventory Settings ───────────────────────────────────────
+  const [invSettings, setInvSettings]       = useState({ issuanceApprovalThreshold: 50, lowStockDefault: 10 });
+  const [invSettingsLoading, setInvSettingsLoading] = useState(false);
+  const [invSettingsSaving, setInvSettingsSaving]   = useState(false);
+  const [invSettingsMsg, setInvSettingsMsg]          = useState("");
+
   // ── Department Permissions ──────────────────────────────────
   const [permRows, setPermRows]             = useState([]);
   const [permLoading, setPermLoading]       = useState(true);
@@ -184,6 +190,16 @@ function AdminPanel() {
     if (activeTab === "invites") loadInvites();
   }, [activeTab, loadInvites]);
 
+
+  // Inventory Settings — load when the tab opens
+  useEffect(() => {
+    if (activeTab !== "invsettings") return;
+    setInvSettingsLoading(true);
+    getInventorySettings()
+      .then(setInvSettings)
+      .catch(() => {})
+      .finally(() => setInvSettingsLoading(false));
+  }, [activeTab]);
 
   // Department Permissions — subscribe only while the tab is open
   useEffect(() => {
@@ -493,6 +509,7 @@ function AdminPanel() {
             { id: "users",       label: "Users" },
             { id: "invites",     label: "Invite Users" },
             { id: "permissions", label: "Department Permissions" },
+            { id: "invsettings", label: "Inventory Settings" },
             { id: "diagnostics", label: "Diagnostics" },
           ].map((t) => (
             <button
@@ -1238,6 +1255,86 @@ service cloud.firestore {
             </div>
           );
         })()}
+
+        {/* ── Inventory Settings tab ────────────── */}
+        {activeTab === "invsettings" && (
+          <div style={{ padding: "20px 16px" }}>
+            <h4 className="admin-section-title">Inventory Configuration</h4>
+            <p className="admin-section-desc">
+              Configure system-wide inventory behaviour. These settings apply immediately to all users.
+            </p>
+
+            {invSettingsLoading ? (
+              <div className="loading-state" style={{ minHeight: 80 }}><div className="spinner" /><p>Loading…</p></div>
+            ) : (
+              <div style={{ maxWidth: 520 }}>
+                <div style={{ marginBottom: 20 }}>
+                  <label className="admin-section-title" style={{ display: "block", marginBottom: 4 }}>
+                    Issuance Approval Threshold (units)
+                  </label>
+                  <p className="admin-section-desc" style={{ marginBottom: 8 }}>
+                    Issuances at or above this quantity require supervisor approval before stock is deducted.
+                    Set to <strong>0</strong> to disable approval gate (all issuances are auto-approved).
+                  </p>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <input
+                      type="number"
+                      min="0"
+                      className="issuance-input"
+                      style={{ width: 120 }}
+                      value={invSettings.issuanceApprovalThreshold ?? 50}
+                      onChange={(e) => setInvSettings((p) => ({ ...p, issuanceApprovalThreshold: Number(e.target.value) }))}
+                    />
+                    <span style={{ fontSize: 12, color: "var(--text-muted)" }}>units</span>
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: 20 }}>
+                  <label className="admin-section-title" style={{ display: "block", marginBottom: 4 }}>
+                    Default Reorder Point (units)
+                  </label>
+                  <p className="admin-section-desc" style={{ marginBottom: 8 }}>
+                    Applied to new inventory items when no item-specific reorder point has been set.
+                    Individual reorder points can be adjusted in Inventory → Stock tab.
+                  </p>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <input
+                      type="number"
+                      min="0"
+                      className="issuance-input"
+                      style={{ width: 120 }}
+                      value={invSettings.lowStockDefault ?? 10}
+                      onChange={(e) => setInvSettings((p) => ({ ...p, lowStockDefault: Number(e.target.value) }))}
+                    />
+                    <span style={{ fontSize: 12, color: "var(--text-muted)" }}>units</span>
+                  </div>
+                </div>
+
+                <div className="diag-test-row">
+                  <button
+                    className="issuance-submit-btn"
+                    disabled={invSettingsSaving}
+                    onClick={async () => {
+                      setInvSettingsSaving(true); setInvSettingsMsg("");
+                      try {
+                        await saveInventorySettings(invSettings);
+                        setInvSettingsMsg("Settings saved.");
+                      } catch (err) {
+                        setInvSettingsMsg("Save failed: " + err.message);
+                      } finally {
+                        setInvSettingsSaving(false);
+                        setTimeout(() => setInvSettingsMsg(""), 4000);
+                      }
+                    }}
+                  >
+                    {invSettingsSaving ? "Saving…" : "Save Settings"}
+                  </button>
+                  {invSettingsMsg && <span className="admin-sync-msg">{invSettingsMsg}</span>}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* ── Department Permissions tab ────────── */}
         {activeTab === "permissions" && (

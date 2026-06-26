@@ -4,10 +4,23 @@ import {
   orderBy, serverTimestamp, where, doc, setDoc, updateDoc, deleteDoc,
 } from "firebase/firestore";
 
-const RECEIPTS_COL   = "receipts";
-const ISSUANCES_COL  = "issuances";
-const INVENTORY_COL  = "inventoryItems";
+const RECEIPTS_COL    = "receipts";
+const ISSUANCES_COL   = "issuances";
+const INVENTORY_COL   = "inventoryItems";
 const ADJUSTMENTS_COL = "inventoryAdjustments";
+const APP_SETTINGS    = "appSettings";
+
+// ─── App / Inventory Settings ────────────────────────────────
+export async function getInventorySettings() {
+  const snap = await getDoc(doc(db, APP_SETTINGS, "inventory"));
+  return snap.exists()
+    ? snap.data()
+    : { issuanceApprovalThreshold: 50, lowStockDefault: 10 };
+}
+
+export async function saveInventorySettings(settings) {
+  await setDoc(doc(db, APP_SETTINGS, "inventory"), settings, { merge: true });
+}
 
 // ─── Receipts ────────────────────────────────────────────────
 export async function getReceipts() {
@@ -35,6 +48,23 @@ export async function deleteReceipt(docId) {
   await deleteDoc(doc(db, RECEIPTS_COL, docId));
 }
 
+// ─── One-time migration: manualReceipts → receipts ───────────
+export async function migrateManualReceipts() {
+  const oldSnap = await getDocs(collection(db, "manualReceipts"));
+  if (oldSnap.empty) return 0;
+  const existingSnap = await getDocs(collection(db, RECEIPTS_COL));
+  const existingIds  = new Set(existingSnap.docs.map((d) => d.id));
+  let count = 0;
+  for (const oldDoc of oldSnap.docs) {
+    if (existingIds.has(oldDoc.id)) continue;
+    // eslint-disable-next-line no-unused-vars
+    const { arcgisObjectId, syncStatus, source, ...clean } = oldDoc.data();
+    await setDoc(doc(db, RECEIPTS_COL, oldDoc.id), clean);
+    count++;
+  }
+  return count;
+}
+
 // ─── Issuances ───────────────────────────────────────────────
 export async function getIssuances() {
   const snap = await getDocs(
@@ -43,17 +73,53 @@ export async function getIssuances() {
   return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 }
 
-// Returns { materialName: totalQtyIssued } across all issuance records.
+export async function getPendingIssuances() {
+  const snap = await getDocs(
+    query(
+      collection(db, ISSUANCES_COL),
+      where("approvalStatus", "==", "pending"),
+      orderBy("issuedAt", "desc")
+    )
+  );
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+// Only count approved/auto-approved issuances toward stock balance.
+// Legacy issuances (no approvalStatus field) are treated as approved.
 export async function getIssuanceTotals() {
   const snap = await getDocs(collection(db, ISSUANCES_COL));
   const totals = {};
   snap.docs.forEach((d) => {
-    const { materialName, qtyIssued } = d.data();
+    const { materialName, qtyIssued, approvalStatus } = d.data();
+    if (approvalStatus === "pending" || approvalStatus === "rejected") return;
     if (materialName) {
       totals[materialName] = (totals[materialName] || 0) + (Number(qtyIssued) || 0);
     }
   });
   return totals;
+}
+
+export async function addIssuance(data) {
+  return addDoc(collection(db, ISSUANCES_COL), {
+    ...data,
+    issuedAt: serverTimestamp(),
+  });
+}
+
+export async function approveIssuance(docId, approverEmail) {
+  await updateDoc(doc(db, ISSUANCES_COL, docId), {
+    approvalStatus: "approved",
+    approvedBy:     approverEmail,
+    approvedAt:     serverTimestamp(),
+  });
+}
+
+export async function rejectIssuance(docId, approverEmail) {
+  await updateDoc(doc(db, ISSUANCES_COL, docId), {
+    approvalStatus: "rejected",
+    rejectedBy:     approverEmail,
+    rejectedAt:     serverTimestamp(),
+  });
 }
 
 // ─── Inventory Item Metadata ─────────────────────────────────
@@ -79,6 +145,8 @@ export async function getOrCreateInventoryItem(materialName, defaults = {}) {
     category:          defaults.category          || "",
     unit:              defaults.unit              || "",
     warehouseLocation: defaults.warehouseLocation || "Main Store",
+    reorderPoint:      defaults.reorderPoint      ?? 10,
+    leadTimeDays:      defaults.leadTimeDays       ?? 7,
     createdAt:         serverTimestamp(),
     updatedAt:         serverTimestamp(),
   };
@@ -86,6 +154,19 @@ export async function getOrCreateInventoryItem(materialName, defaults = {}) {
   const item = { id: key, ...payload };
   _itemCache.set(key, item);
   return item;
+}
+
+export async function updateInventoryItem(key, data) {
+  _itemCache.delete(key);
+  await updateDoc(doc(db, INVENTORY_COL, key), {
+    ...data,
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function getAllInventoryItems() {
+  const snap = await getDocs(collection(db, INVENTORY_COL));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 }
 
 // ─── Issue Reference Number ──────────────────────────────────
@@ -100,35 +181,6 @@ export async function generateIssueRef() {
     )
   );
   return `${prefix}${String(snap.size + 1).padStart(4, "0")}`;
-}
-
-export async function addIssuance(data) {
-  return addDoc(collection(db, ISSUANCES_COL), {
-    ...data,
-    issuedAt: serverTimestamp(),
-  });
-}
-
-// ─── One-time migration: manualReceipts → receipts ───────────
-// Copies every document from the legacy manualReceipts collection into
-// the new receipts collection, stripping ArcGIS-specific fields.
-// Safe to run repeatedly — skips docs that already exist in receipts.
-export async function migrateManualReceipts() {
-  const oldSnap = await getDocs(collection(db, "manualReceipts"));
-  if (oldSnap.empty) return 0;
-
-  const existingSnap = await getDocs(collection(db, RECEIPTS_COL));
-  const existingIds  = new Set(existingSnap.docs.map((d) => d.id));
-
-  let count = 0;
-  for (const oldDoc of oldSnap.docs) {
-    if (existingIds.has(oldDoc.id)) continue;
-    // eslint-disable-next-line no-unused-vars
-    const { arcgisObjectId, syncStatus, source, ...clean } = oldDoc.data();
-    await setDoc(doc(db, RECEIPTS_COL, oldDoc.id), clean);
-    count++;
-  }
-  return count;
 }
 
 // ─── Inventory Adjustments ───────────────────────────────────

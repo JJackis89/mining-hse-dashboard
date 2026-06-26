@@ -1,0 +1,264 @@
+/* ══════════════════════════════════════════════════════════════
+   features.css — Styles for all new inventory platform features
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── Page containers ─────────────────────────────────────────── */
+.page-suppliers,
+.page-stocktake,
+.page-reports { padding: 20px; }
+
+/* ── Dashboard alert cards ───────────────────────────────────── */
+.dash-alert-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.dash-alert-card {
+  border-radius: 10px;
+  padding: 14px 16px;
+  border: 1px solid;
+}
+
+.dash-alert-card--warn {
+  background: rgba(212, 130, 10, 0.08);
+  border-color: rgba(212, 130, 10, 0.25);
+}
+
+.dash-alert-card--danger {
+  background: rgba(220, 53, 69, 0.07);
+  border-color: rgba(220, 53, 69, 0.2);
+}
+
+.dash-alert-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.dash-alert-icon {
+  font-size: 16px;
+}
+
+.dash-alert-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.dash-alert-list li {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* ── Stock tab badges ─────────────────────────────────────────── */
+.feat-stock-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 8px;
+  margin-left: 6px;
+  vertical-align: middle;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.feat-stock-badge--low {
+  background: rgba(212, 130, 10, 0.15);
+  color: #D4820A;
+}
+
+.feat-stock-badge--out {
+  background: rgba(220, 53, 69, 0.15);
+  color: #dc3545;
+}
+
+.feat-row--low  { background: rgba(212, 130, 10, 0.04); }
+.feat-row--out  { background: rgba(220, 53, 69, 0.04); }
+
+/* ── Reorder point inline edit button ────────────────────────── */
+.feat-reorder-btn {
+  background: transparent;
+  border: 1px dashed var(--border-color);
+  border-radius: 5px;
+  padding: 3px 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.feat-reorder-btn:hover {
+  border-color: var(--accent-orange);
+  color: var(--accent-orange);
+}
+
+/* ── Expiry badges ───────────────────────────────────────────── */
+.feat-expiry-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+.feat-expiry-badge--ok {
+  background: rgba(30, 158, 82, 0.12);
+  color: #1E9E52;
+}
+
+.feat-expiry-badge--warning {
+  background: rgba(212, 130, 10, 0.15);
+  color: #D4820A;
+}
+
+.feat-expiry-badge--critical {
+  background: rgba(220, 53, 69, 0.12);
+  color: #dc3545;
+}
+
+.feat-expiry-badge--expired {
+  background: rgba(220, 53, 69, 0.2);
+  color: #dc3545;
+  font-weight: 700;
+}
+
+/* ── Approval status chips ───────────────────────────────────── */
+.feat-approval-chip {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.feat-approval-chip--approved {
+  background: rgba(30, 158, 82, 0.12);
+  color: #1E9E52;
+}
+
+.feat-approval-chip--pending {
+  background: rgba(212, 130, 10, 0.15);
+  color: #D4820A;
+}
+
+.feat-approval-chip--rejected {
+  background: rgba(220, 53, 69, 0.12);
+  color: #dc3545;
+}
+
+/* ── Approval warning notice inside issuance modal ───────────── */
+.feat-approval-notice {
+  background: rgba(212, 130, 10, 0.1);
+  border: 1px solid rgba(212, 130, 10, 0.3);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 12px;
+  color: #A06000;
+  margin-top: 12px;
+  line-height: 1.5;
+}
+
+/* ── Status badges (stock take) ──────────────────────────────── */
+.feat-status-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: 10px;
+}
+
+.feat-status-badge--done {
+  background: rgba(30, 158, 82, 0.12);
+  color: #1E9E52;
+}
+
+.feat-status-badge--progress {
+  background: rgba(212, 130, 10, 0.15);
+  color: #D4820A;
+}
+
+/* ── QR modal ────────────────────────────────────────────────── */
+.feat-qr-modal {
+  max-width: 380px;
+}
+
+@media print {
+  body > *:not(.feat-qr-modal) { display: none !important; }
+  .photo-modal-overlay { position: static; background: none; }
+  .photo-modal { box-shadow: none; border: none; }
+  .photo-modal-header button,
+  .issue-btn { display: none; }
+}
+
+/* ── CSV import modal ────────────────────────────────────────── */
+.feat-csv-modal { max-width: 720px; }
+
+.feat-csv-dropzone {
+  border: 2px dashed var(--border-color);
+  border-radius: 10px;
+  padding: 32px 20px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  transition: border-color 0.15s, background 0.15s;
+  cursor: default;
+}
+
+.feat-csv-dropzone--over {
+  border-color: var(--accent-orange);
+  background: rgba(184, 136, 26, 0.05);
+}
+
+/* ── Document attachment link ────────────────────────────────── */
+.feat-doc-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--accent-orange);
+  text-decoration: none;
+  border: 1px solid rgba(184, 136, 26, 0.3);
+  border-radius: 5px;
+  padding: 2px 8px;
+  margin-right: 6px;
+  margin-bottom: 4px;
+  transition: background 0.12s;
+}
+
+.feat-doc-link:hover { background: rgba(184, 136, 26, 0.08); }
+
+.feat-file-input {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* ── Reports page ────────────────────────────────────────────── */
+.report-filter-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  padding: 12px 0;
+}
+
+.report-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+/* ── Supplier page ───────────────────────────────────────────── */
+.page-suppliers .panel { margin-bottom: 16px; }
