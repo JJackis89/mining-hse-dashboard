@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { getIssuances, getReceipts, getAdjustments } from "../services/issuanceService";
+import { getIssuances, getReceipts } from "../services/issuanceService";
 import { getSuppliers } from "../services/supplierService";
 import { exportToCsv } from "../utils/exportCsv";
 import {
@@ -45,7 +45,7 @@ function Reports() {
   const [filterDept, setFilterDept]       = useState("All");
   const [dateFrom, setDateFrom]           = useState("");
   const [dateTo, setDateTo]               = useState("");
-  const [now]                             = useState(() => now);
+  const [now]                             = useState(() => Date.now());
 
   useEffect(() => {
     Promise.all([getIssuances(), getReceipts(), getSuppliers()])
