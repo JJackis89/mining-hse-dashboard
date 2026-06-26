@@ -85,9 +85,10 @@ function Dashboard() {
     return map;
   }, [receipts, issuanceTotals, adjustments]);
 
-  // Low-stock alerts — items below reorder point
+  // Low-stock alerts — Consumables only, below reorder point
   const lowStockAlerts = useMemo(() => {
     return inventoryItems
+      .filter((item) => (item.itemType || "Consumable") === "Consumable")
       .map((item) => {
         const bal = stockBalances[item.materialName];
         if (!bal) return null;
@@ -158,7 +159,7 @@ function Dashboard() {
             <div className="dash-alert-card dash-alert-card--warn">
               <div className="dash-alert-header">
                 <span className="dash-alert-icon">⚠</span>
-                <strong>{lowStockAlerts.length} Low Stock Alert{lowStockAlerts.length !== 1 ? "s" : ""}</strong>
+                <strong>{lowStockAlerts.length} Low Stock Alert{lowStockAlerts.length !== 1 ? "s" : ""} — Consumables</strong>
               </div>
               <ul className="dash-alert-list">
                 {lowStockAlerts.slice(0, 4).map((item) => (

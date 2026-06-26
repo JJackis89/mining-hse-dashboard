@@ -841,9 +841,13 @@ function AddAdjustmentModal({ allRecords, user, onClose, onSuccess }) {
 }
 
 // ─── Stock Tab ────────────────────────────────────────────────
-function StockTab({ records, allTotals, adjustments, inventoryItems, onQrClick, onReorderSave }) {
-  const [search, setSearch] = useState("");
-  const [editingReorder, setEditingReorder] = useState({}); // { key: value }
+const ITEM_TYPES = ["Consumable", "Non-Consumable"];
+
+function StockTab({ records, allTotals, adjustments, inventoryItems, onQrClick, onReorderSave, onItemTypeSave }) {
+  const [search, setSearch]               = useState("");
+  const [filterType, setFilterType]       = useState("All");
+  const [editingReorder, setEditingReorder] = useState({});
+  const [editingType, setEditingType]     = useState({});
 
   const itemMap = useMemo(() => Object.fromEntries(inventoryItems.map((i) => [i.materialName, i])), [inventoryItems]);
 
@@ -862,17 +866,22 @@ function StockTab({ records, allTotals, adjustments, inventoryItems, onQrClick, 
       map[name].netAdjusted += (ADJ_ADDS.has(adj.adjustmentType) ? 1 : -1) * (Number(adj.quantity) || 0);
     });
     return Object.values(map).map((m) => {
-      const item        = itemMap[m.material_name];
-      const balance     = m.totalReceived + m.netAdjusted - m.totalIssued;
+      const item         = itemMap[m.material_name];
+      const balance      = m.totalReceived + m.netAdjusted - m.totalIssued;
       const reorderPoint = Number(item?.reorderPoint) ?? 10;
-      return { ...m, balance, reorderPoint, itemCode: item?.itemCode, itemId: item?.id };
+      const itemType     = item?.itemType || "Consumable";
+      return { ...m, balance, reorderPoint, itemType, itemCode: item?.itemCode, itemId: item?.id };
     }).sort((a, b) => a.material_name.localeCompare(b.material_name));
   }, [records, allTotals, adjustments, itemMap]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
-    return q ? stockData.filter((m) => m.material_name.toLowerCase().includes(q) || (m.category || "").toLowerCase().includes(q)) : stockData;
-  }, [stockData, search]);
+    return stockData.filter((m) => {
+      const matchType   = filterType === "All" || m.itemType === filterType;
+      const matchSearch = !q || m.material_name.toLowerCase().includes(q) || (m.category || "").toLowerCase().includes(q);
+      return matchType && matchSearch;
+    });
+  }, [stockData, search, filterType]);
 
   const handleReorderChange = (key, val) => setEditingReorder((p) => ({ ...p, [key]: val }));
   const handleReorderSave   = async (item) => {
@@ -881,33 +890,62 @@ function StockTab({ records, allTotals, adjustments, inventoryItems, onQrClick, 
     await onReorderSave(item, val);
     setEditingReorder((p) => { const n = { ...p }; delete n[item.material_name]; return n; });
   };
+  const handleTypeSave = async (item, newType) => {
+    await onItemTypeSave(item, newType);
+    setEditingType((p) => { const n = { ...p }; delete n[item.material_name]; return n; });
+  };
 
   return (
     <>
-      <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-color)" }}>
-        <input className="table-search" placeholder="Search material or category…" value={search} onChange={(e) => setSearch(e.target.value)} />
+      <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-color)", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <input className="table-search" placeholder="Search material or category…" value={search} onChange={(e) => setSearch(e.target.value)} style={{ flex: "1 1 180px" }} />
+        <div className="activity-filters" role="group">
+          {["All", ...ITEM_TYPES].map((t) => (
+            <button key={t} className={`filter-btn ${filterType === t ? "filter-btn--active" : ""}`}
+              onClick={() => setFilterType(t)} aria-pressed={filterType === t}>{t}</button>
+          ))}
+        </div>
       </div>
       {filtered.length === 0 ? <div className="empty-state"><p>No stock data.</p></div> : (
         <div className="table-scroll" style={{ maxHeight: 520 }}>
           <table className="data-table">
             <thead>
               <tr>
-                <th>Material</th><th>Category</th><th>Unit</th>
+                <th>Material</th><th>Type</th><th>Category</th><th>Unit</th>
                 <th>Received</th><th>Issued</th><th>Adjusted</th><th>Balance</th>
                 <th>Reorder Point</th><th>QR</th>
               </tr>
             </thead>
             <tbody>
               {filtered.map((m) => {
-                const isLow    = m.balance <= m.reorderPoint;
-                const isOut    = m.balance <= 0;
-                const editing  = m.material_name in editingReorder;
+                const isConsumable = m.itemType === "Consumable";
+                const isLow        = isConsumable && m.balance <= m.reorderPoint;
+                const isOut        = isConsumable && m.balance <= 0;
+                const editingR     = m.material_name in editingReorder;
+                const editingT     = m.material_name in editingType;
                 return (
                   <tr key={m.material_name} className={isOut ? "feat-row--out" : isLow ? "feat-row--low" : ""}>
                     <td className="bold" data-label="Material">
                       {m.material_name}
                       {isOut && <span className="feat-stock-badge feat-stock-badge--out">Out</span>}
                       {!isOut && isLow && <span className="feat-stock-badge feat-stock-badge--low">Low</span>}
+                    </td>
+                    <td data-label="Type">
+                      {editingT ? (
+                        <select className="issuance-item-select" style={{ fontSize: 11, padding: "2px 6px" }}
+                          value={editingType[m.material_name]}
+                          onChange={(e) => setEditingType((p) => ({ ...p, [m.material_name]: e.target.value }))}
+                          onBlur={() => handleTypeSave(m, editingType[m.material_name])}
+                          autoFocus>
+                          {ITEM_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                        </select>
+                      ) : (
+                        <button className="feat-reorder-btn"
+                          style={{ color: isConsumable ? "#1A74BC" : "#7D3C98", borderColor: isConsumable ? "rgba(26,116,188,0.3)" : "rgba(125,60,152,0.3)" }}
+                          onClick={() => setEditingType((p) => ({ ...p, [m.material_name]: m.itemType }))}>
+                          {m.itemType} <span style={{ opacity: 0.5, fontSize: 10 }}>✏</span>
+                        </button>
+                      )}
                     </td>
                     <td data-label="Category">{m.category ? <span className="inv-category-badge">{m.category}</span> : "—"}</td>
                     <td data-label="Unit">{m.unit || "—"}</td>
@@ -922,21 +960,23 @@ function StockTab({ records, allTotals, adjustments, inventoryItems, onQrClick, 
                       </span>
                     </td>
                     <td data-label="Reorder" style={{ whiteSpace: "nowrap" }}>
-                      {editing ? (
-                        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                          <input type="number" value={editingReorder[m.material_name]} min="0"
-                            onChange={(e) => handleReorderChange(m.material_name, e.target.value)}
-                            className="issuance-input" style={{ width: 70, padding: "3px 6px" }}
-                            onKeyDown={(e) => { if (e.key === "Enter") handleReorderSave(m); if (e.key === "Escape") setEditingReorder((p) => { const n = { ...p }; delete n[m.material_name]; return n; }); }}
-                            autoFocus
-                          />
-                          <button className="photo-view-btn" style={{ padding: "3px 8px", fontSize: 11 }} onClick={() => handleReorderSave(m)}>✓</button>
-                        </div>
-                      ) : (
-                        <button className="feat-reorder-btn" onClick={() => handleReorderChange(m.material_name, String(m.reorderPoint))}>
-                          {m.reorderPoint} <span style={{ opacity: 0.5, fontSize: 10 }}>✏</span>
-                        </button>
-                      )}
+                      {isConsumable ? (
+                        editingR ? (
+                          <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                            <input type="number" value={editingReorder[m.material_name]} min="0"
+                              onChange={(e) => handleReorderChange(m.material_name, e.target.value)}
+                              className="issuance-input" style={{ width: 70, padding: "3px 6px" }}
+                              onKeyDown={(e) => { if (e.key === "Enter") handleReorderSave(m); if (e.key === "Escape") setEditingReorder((p) => { const n = { ...p }; delete n[m.material_name]; return n; }); }}
+                              autoFocus
+                            />
+                            <button className="photo-view-btn" style={{ padding: "3px 8px", fontSize: 11 }} onClick={() => handleReorderSave(m)}>✓</button>
+                          </div>
+                        ) : (
+                          <button className="feat-reorder-btn" onClick={() => handleReorderChange(m.material_name, String(m.reorderPoint))}>
+                            {m.reorderPoint} <span style={{ opacity: 0.5, fontSize: 10 }}>✏</span>
+                          </button>
+                        )
+                      ) : <span style={{ color: "var(--text-muted)", fontSize: 12 }}>—</span>}
                     </td>
                     <td>
                       {m.itemCode && (
@@ -1127,6 +1167,7 @@ function Inventory() {
   const [pendingRefresh, setPendingRefresh] = useState(0);
 
   const [activeTab, setActiveTab]               = useState("receipts");
+  const [filterType, setFilterType]             = useState("All");
   const [issuanceTarget, setIssuanceTarget]     = useState(null);
   const [issuanceSuccess, setIssuanceSuccess]   = useState("");
   const [issuancesRefresh, setIssuancesRefresh] = useState(0);
@@ -1184,19 +1225,25 @@ function Inventory() {
     return ["All", ...cats];
   }, [records]);
 
+  const itemTypeMap = useMemo(() =>
+    Object.fromEntries(inventoryItems.map((i) => [i.materialName, i.itemType || "Consumable"])),
+  [inventoryItems]);
+
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
     return records.filter((r) => {
       const matchCat    = filterCat === "All" || r.category === filterCat;
+      const matchType   = filterType === "All" || (itemTypeMap[r.material_name] || "Consumable") === filterType;
       const matchSearch = !q || (r.material_name || "").toLowerCase().includes(q)
         || (r.received_by || "").toLowerCase().includes(q) || (r.remarks || "").toLowerCase().includes(q)
         || (r.supplier || "").toLowerCase().includes(q) || (r.po_reference || "").toLowerCase().includes(q);
-      return matchCat && matchSearch;
+      return matchCat && matchType && matchSearch;
     });
-  }, [records, search, filterCat]);
+  }, [records, search, filterCat, filterType, itemTypeMap]);
 
-  const handleSearch = useCallback((val) => { setSearch(val); setPage(1); }, []);
-  const handleFilter = useCallback((cat) => { setFilterCat(cat); setPage(1); }, []);
+  const handleSearch     = useCallback((val) => { setSearch(val); setPage(1); }, []);
+  const handleFilter     = useCallback((cat) => { setFilterCat(cat); setPage(1); }, []);
+  const handleTypeFilter = useCallback((t) => { setFilterType(t); setPage(1); }, []);
 
   const totals = useMemo(() => ({
     count:     filtered.length,
@@ -1257,6 +1304,14 @@ function Inventory() {
       await updateInventoryItem(item.itemId || item.material_name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_"), { reorderPoint: newPoint }, user);
       setInventoryItems((prev) => prev.map((i) => i.materialName === item.material_name ? { ...i, reorderPoint: newPoint } : i));
     } catch (err) { alert("Failed to update reorder point: " + err.message); }
+  }, []);
+
+  const handleItemTypeSave = useCallback(async (item, newType) => {
+    try {
+      const key = item.itemId || item.material_name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+      await updateInventoryItem(key, { itemType: newType }, user);
+      setInventoryItems((prev) => prev.map((i) => i.materialName === item.material_name ? { ...i, itemType: newType } : i));
+    } catch (err) { alert("Failed to update item type: " + err.message); }
   }, []);
 
   const handleCsvSuccess = useCallback((count) => {
@@ -1337,6 +1392,12 @@ function Inventory() {
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   <input className="table-search" placeholder="Search material, supplier, PO ref…" value={search} onChange={(e) => handleSearch(e.target.value)} />
                   <div className="activity-filters" role="group">
+                    {["All", ...ITEM_TYPES].map((t) => (
+                      <button key={t} className={`filter-btn ${filterType === t ? "filter-btn--active" : ""}`}
+                        onClick={() => handleTypeFilter(t)} aria-pressed={filterType === t}>{t}</button>
+                    ))}
+                  </div>
+                  <div className="activity-filters" role="group">
                     {categories.map((cat) => (
                       <button key={cat} className={`filter-btn ${filterCat === cat ? "filter-btn--active" : ""}`}
                         onClick={() => handleFilter(cat)} aria-pressed={filterCat === cat}>{cat}</button>
@@ -1363,7 +1424,7 @@ function Inventory() {
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th>Date Received</th><th>Material</th><th>Category</th><th>Qty</th>
+                      <th>Date Received</th><th>Material</th><th>Type</th><th>Category</th><th>Qty</th>
                       <th>Unit</th><th>Supplier</th><th>PO Ref</th><th>Expiry</th>
                       <th>Received By</th><th>Remarks</th>
                       {canIssue && <th>Issue</th>}
@@ -1374,10 +1435,18 @@ function Inventory() {
                     {pageItems.map((r) => {
                       const isExpired  = r.expiryDate && r.expiryDate <= now;
                       const isExpiring = r.expiryDate && !isExpired && r.expiryDate <= now + EXPIRY_SOON;
+                      const iType      = itemTypeMap[r.material_name] || "Consumable";
                       return (
                         <tr key={r.id}>
                           <td className="mono">{fmt(r.date_time_received)}</td>
                           <td className="bold">{r.material_name || "—"}</td>
+                          <td>
+                            <span style={{ fontSize: 11, fontWeight: 600, padding: "2px 7px", borderRadius: 10,
+                              background: iType === "Consumable" ? "rgba(26,116,188,0.1)" : "rgba(125,60,152,0.1)",
+                              color: iType === "Consumable" ? "#1A74BC" : "#7D3C98" }}>
+                              {iType}
+                            </span>
+                          </td>
                           <td>{r.category ? <span className="inv-category-badge">{r.category}</span> : "—"}</td>
                           <td className="mono">{r.quantity_received ?? "—"}</td>
                           <td>{r.unit || "—"}</td>
@@ -1416,7 +1485,8 @@ function Inventory() {
 
         {activeTab === "stock" && (
           <StockTab records={records} allTotals={allTotals} adjustments={adjustments}
-            inventoryItems={inventoryItems} onQrClick={setQrTarget} onReorderSave={handleReorderSave} />
+            inventoryItems={inventoryItems} onQrClick={setQrTarget}
+            onReorderSave={handleReorderSave} onItemTypeSave={handleItemTypeSave} />
         )}
 
         {activeTab === "issuances" && (

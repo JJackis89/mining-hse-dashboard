@@ -211,6 +211,7 @@ export async function getOrCreateInventoryItem(materialName, defaults = {}) {
     warehouseLocation: defaults.warehouseLocation || "Main Store",
     reorderPoint:      defaults.reorderPoint      ?? 10,
     leadTimeDays:      defaults.leadTimeDays       ?? 7,
+    itemType:          defaults.itemType          || "Consumable",
     createdAt:         serverTimestamp(),
     updatedAt:         serverTimestamp(),
   };

@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { getIssuances, getReceipts } from "../services/issuanceService";
+import { getIssuances, getReceipts, getAllInventoryItems } from "../services/issuanceService";
 import { getSuppliers } from "../services/supplierService";
 import { exportToCsv } from "../utils/exportCsv";
 import {
@@ -35,32 +35,39 @@ const ISSUANCE_CSV = [
 ];
 
 function Reports() {
-  const [issuances, setIssuances]   = useState([]);
-  const [receipts, setReceipts]     = useState([]);
-  const [suppliers, setSuppliers]   = useState([]);
-  const [loading, setLoading]       = useState(true);
-  const [error, setError]           = useState(null);
-  const [activeTab, setActiveTab]   = useState("projects");
+  const [issuances, setIssuances]         = useState([]);
+  const [receipts, setReceipts]           = useState([]);
+  const [suppliers, setSuppliers]         = useState([]);
+  const [inventoryItems, setInventoryItems] = useState([]);
+  const [loading, setLoading]             = useState(true);
+  const [error, setError]                 = useState(null);
+  const [activeTab, setActiveTab]         = useState("projects");
   const [filterProject, setFilterProject] = useState("All");
   const [filterDept, setFilterDept]       = useState("All");
+  const [filterItemType, setFilterItemType] = useState("All");
   const [dateFrom, setDateFrom]           = useState("");
   const [dateTo, setDateTo]               = useState("");
   const [now]                             = useState(() => Date.now());
 
   useEffect(() => {
-    Promise.all([getIssuances(), getReceipts(), getSuppliers()])
-      .then(([i, r, s]) => { setIssuances(i); setReceipts(r); setSuppliers(s); })
+    Promise.all([getIssuances(), getReceipts(), getSuppliers(), getAllInventoryItems()])
+      .then(([i, r, s, items]) => { setIssuances(i); setReceipts(r); setSuppliers(s); setInventoryItems(items); })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
   }, []);
 
-  // Filter issuances by date range
+  const itemTypeMap = useMemo(() =>
+    Object.fromEntries(inventoryItems.map((i) => [i.materialName, i.itemType || "Consumable"])),
+  [inventoryItems]);
+
+  // Filter issuances by date range, project, dept, and item type
   const filteredIssuances = useMemo(() => {
     return issuances.filter((i) => {
       const approved = !i.approvalStatus || i.approvalStatus === "approved" || i.approvalStatus === "auto-approved";
       if (!approved) return false;
       if (filterProject !== "All" && (i.projectCode || "Unassigned") !== filterProject) return false;
       if (filterDept !== "All" && i.department !== filterDept) return false;
+      if (filterItemType !== "All" && (itemTypeMap[i.materialName] || "Consumable") !== filterItemType) return false;
       if (dateFrom) {
         const d = i.issuedAt?.toDate ? i.issuedAt.toDate() : new Date(i.dateOfIssuance || 0);
         if (d < new Date(dateFrom)) return false;
@@ -71,7 +78,7 @@ function Reports() {
       }
       return true;
     });
-  }, [issuances, filterProject, filterDept, dateFrom, dateTo]);
+  }, [issuances, filterProject, filterDept, filterItemType, dateFrom, dateTo, itemTypeMap]);
 
   // Project cost allocation
   const projectData = useMemo(() => {
@@ -157,9 +164,17 @@ function Reports() {
         <div className="kpi-card">
           <div className="kpi-icon" style={{ background: "rgba(26,116,188,0.1)", color: "#1A74BC" }} />
           <div className="kpi-data">
-            <span className="kpi-value">{projectData.filter((p) => p.project !== "Unassigned").length}</span>
-            <span className="kpi-title">Projects</span>
-            <span className="kpi-trend">Active cost centres</span>
+            <span className="kpi-value">{inventoryItems.filter((i) => (i.itemType || "Consumable") === "Consumable").length}</span>
+            <span className="kpi-title">Consumables</span>
+            <span className="kpi-trend">Replenishable stock items</span>
+          </div>
+        </div>
+        <div className="kpi-card">
+          <div className="kpi-icon" style={{ background: "rgba(125,60,152,0.1)", color: "#7D3C98" }} />
+          <div className="kpi-data">
+            <span className="kpi-value">{inventoryItems.filter((i) => i.itemType === "Non-Consumable").length}</span>
+            <span className="kpi-title">Fixed Assets</span>
+            <span className="kpi-trend">Non-consumable equipment</span>
           </div>
         </div>
         <div className="kpi-card">
@@ -170,18 +185,15 @@ function Reports() {
             <span className="kpi-trend">Require action</span>
           </div>
         </div>
-        <div className="kpi-card">
-          <div className="kpi-icon" style={{ background: "rgba(125,60,152,0.1)", color: "#7D3C98" }} />
-          <div className="kpi-data">
-            <span className="kpi-value">{supplierData.length}</span>
-            <span className="kpi-title">Suppliers</span>
-            <span className="kpi-trend">With deliveries</span>
-          </div>
-        </div>
       </section>
 
       {/* Filter bar */}
       <div className="report-filter-bar">
+        <select className="admin-role-select" value={filterItemType} onChange={(e) => setFilterItemType(e.target.value)}>
+          <option value="All">All Types</option>
+          <option value="Consumable">Consumables</option>
+          <option value="Non-Consumable">Non-Consumables (Assets)</option>
+        </select>
         <select className="admin-role-select" value={filterProject} onChange={(e) => setFilterProject(e.target.value)}>
           {allProjects.map((p) => <option key={p} value={p}>{p === "All" ? "All Projects" : p}</option>)}
         </select>
@@ -192,8 +204,8 @@ function Reports() {
           onChange={(e) => setDateFrom(e.target.value)} placeholder="From" />
         <input type="date" className="issuance-input" style={{ width: 150 }} value={dateTo}
           onChange={(e) => setDateTo(e.target.value)} placeholder="To" />
-        {(filterProject !== "All" || filterDept !== "All" || dateFrom || dateTo) && (
-          <button className="photo-view-btn" onClick={() => { setFilterProject("All"); setFilterDept("All"); setDateFrom(""); setDateTo(""); }}>
+        {(filterItemType !== "All" || filterProject !== "All" || filterDept !== "All" || dateFrom || dateTo) && (
+          <button className="photo-view-btn" onClick={() => { setFilterItemType("All"); setFilterProject("All"); setFilterDept("All"); setDateFrom(""); setDateTo(""); }}>
             Clear
           </button>
         )}
