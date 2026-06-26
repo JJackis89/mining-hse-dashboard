@@ -112,6 +112,12 @@ function Dashboard() {
       .slice(0, 5);
   }, [receipts, now]);
 
+  // Item-type lookup (must be before KPI aggregates)
+  const typeMap = useMemo(
+    () => Object.fromEntries(inventoryItems.map((i) => [i.materialName, i.itemType || "Consumable"])),
+    [inventoryItems]
+  );
+
   // KPI aggregates
   const totalReceipts  = receipts.length;
   const totalQty       = receipts.reduce((s, r) => s + (r.quantity_received || 0), 0);
@@ -136,8 +142,6 @@ function Dashboard() {
   }, [receipts]);
 
   // Receipts by item type (Consumable / Non-Consumable)
-  const typeMap = Object.fromEntries(inventoryItems.map((i) => [i.materialName, i.itemType || "Consumable"]));
-
   const catData = useMemo(() => {
     const map = { Consumable: 0, "Non-Consumable": 0 };
     receipts.forEach((r) => {
