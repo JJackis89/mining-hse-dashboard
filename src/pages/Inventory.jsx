@@ -530,7 +530,7 @@ function IssuanceModal({ prefill, allRecords, allTotals, user, approvalThreshold
 }
 
 // ─── Receipt Modal (add + edit) ───────────────────────────────
-function ReceiptModal({ user, editRecord, suppliers, onClose, onSuccess }) {
+function ReceiptModal({ user, editRecord, suppliers, itemTypeMap, onClose, onSuccess }) {
   const isEdit = !!editRecord;
   const [form, setForm] = useState({
     material_name:     editRecord?.material_name     || "",
@@ -542,6 +542,7 @@ function ReceiptModal({ user, editRecord, suppliers, onClose, onSuccess }) {
     received_by:       editRecord?.received_by       || "",
     po_reference:      editRecord?.po_reference      || "",
     remarks:           editRecord?.remarks           || "",
+    itemType: (editRecord?.material_name && itemTypeMap?.[editRecord.material_name]) || "Consumable",
     date: editRecord?.date_time_received
       ? new Date(editRecord.date_time_received).toISOString().split("T")[0] : todayISO(),
     expiryDate: editRecord?.expiryDate
@@ -618,6 +619,10 @@ function ReceiptModal({ user, editRecord, suppliers, onClose, onSuccess }) {
       } else {
         await addReceipt({ ...payload, addedByEmail: user.email });
       }
+      // Persist itemType on the inventory item (create if new material)
+      const itemKey = form.material_name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+      await getOrCreateInventoryItem(form.material_name.trim(), { itemType: form.itemType });
+      await updateInventoryItem(itemKey, { itemType: form.itemType });
       onSuccess(payload.material_name);
     } catch {
       setError("Failed to save receipt. Please try again.");
@@ -647,6 +652,13 @@ function ReceiptModal({ user, editRecord, suppliers, onClose, onSuccess }) {
                 className="issuance-input" placeholder="e.g. Cement Bags" required />
             </div>
             <div className="issuance-form-grid">
+              <div className="issuance-field">
+                <label>Item Type <span className="issuance-required">*</span></label>
+                <select className="issuance-item-select" value={form.itemType} onChange={set("itemType")}>
+                  <option value="Consumable">Consumable</option>
+                  <option value="Non-Consumable">Non-Consumable (Fixed Asset)</option>
+                </select>
+              </div>
               <div className="issuance-field">
                 <label>Category</label>
                 <input type="text" value={form.category} onChange={set("category")} className="issuance-input" placeholder="e.g. Building Materials" />
@@ -1517,10 +1529,10 @@ function Inventory() {
       {showCsvImport && <CsvImportModal suppliers={suppliers} user={user} onClose={() => setShowCsvImport(false)} onSuccess={handleCsvSuccess} />}
 
       {showAddReceipt && (
-        <ReceiptModal user={user} suppliers={suppliers} onClose={() => setShowAddReceipt(false)} onSuccess={handleReceiptSuccess} />
+        <ReceiptModal user={user} suppliers={suppliers} itemTypeMap={itemTypeMap} onClose={() => setShowAddReceipt(false)} onSuccess={handleReceiptSuccess} />
       )}
       {editTarget && (
-        <ReceiptModal user={user} editRecord={editTarget} suppliers={suppliers} onClose={() => setEditTarget(null)} onSuccess={handleEditSuccess} />
+        <ReceiptModal user={user} editRecord={editTarget} suppliers={suppliers} itemTypeMap={itemTypeMap} onClose={() => setEditTarget(null)} onSuccess={handleEditSuccess} />
       )}
       {deleteTarget && (
         <DeleteConfirmModal record={deleteTarget} deleting={deleting} onConfirm={handleDeleteReceipt} onCancel={() => setDeleteTarget(null)} />
