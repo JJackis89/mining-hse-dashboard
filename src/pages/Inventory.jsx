@@ -668,6 +668,9 @@ function ReceiptModal({ user, editRecord, suppliers, onClose, onSuccess }) {
               <div className="issuance-field">
                 <label>Date Received <span className="issuance-required">*</span></label>
                 <input type="date" value={form.date} onChange={set("date")} className="issuance-input" required />
+                <span style={{ fontSize: 11, color: "#8B96A6", marginTop: 3, display: "block" }}>
+                  Enter the date goods physically arrived — not today's date if received earlier.
+                </span>
               </div>
               <div className="issuance-field">
                 <label>Expiry Date</label>
