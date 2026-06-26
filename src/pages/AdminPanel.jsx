@@ -138,15 +138,15 @@ function AdminPanel() {
   const [migrating, setMigrating]   = useState(false);
   const [migrateMsg, setMigrateMsg] = useState("");
 
-  // ── Audit Log ───────────────────────────────────────────────
-  const [auditEntries, setAuditEntries]     = useState([]);
-  const [auditLoading, setAuditLoading]     = useState(false);
-  const [auditError, setAuditError]         = useState(null);
-  const [auditLastDoc, setAuditLastDoc]     = useState(null);
-  const [auditHasMore, setAuditHasMore]     = useState(false);
-  const [auditLoadingMore, setAuditLoadingMore] = useState(false);
-  const [auditFilterMod, setAuditFilterMod] = useState("");
-  const [auditFilterUser, setAuditFilterUser] = useState("");
+  // ── Platform Audit Trail ─────────────────────────────────────
+  const [trailEntries, setTrailEntries]         = useState([]);
+  const [trailLoading, setTrailLoading]         = useState(false);
+  const [trailError, setTrailError]             = useState(null);
+  const [trailLastDoc, setTrailLastDoc]         = useState(null);
+  const [trailHasMore, setTrailHasMore]         = useState(false);
+  const [trailLoadingMore, setTrailLoadingMore] = useState(false);
+  const [trailFilterMod, setTrailFilterMod]     = useState("");
+  const [trailFilterUser, setTrailFilterUser]   = useState("");
 
   // ── Inventory Settings ───────────────────────────────────────
   const [invSettings, setInvSettings]       = useState({ issuanceApprovalThreshold: 50, lowStockDefault: 10 });
@@ -212,41 +212,41 @@ function AdminPanel() {
       .finally(() => setInvSettingsLoading(false));
   }, [activeTab]);
 
-  // Audit Log — load/reload when tab opens or filters change
+  // Platform Audit Trail — load/reload when tab opens or filters change
   useEffect(() => {
     if (activeTab !== "auditlog") return;
-    setAuditLoading(true);
-    setAuditError(null);
-    setAuditLastDoc(null);
+    setTrailLoading(true);
+    setTrailError(null);
+    setTrailLastDoc(null);
     getAuditLog({
-      module: auditFilterMod || null,
-      performedBy: auditFilterUser.trim() || null,
+      module: trailFilterMod || null,
+      performedBy: trailFilterUser.trim() || null,
     })
       .then(({ entries, lastDoc, hasMore }) => {
-        setAuditEntries(entries);
-        setAuditLastDoc(lastDoc);
-        setAuditHasMore(hasMore);
+        setTrailEntries(entries);
+        setTrailLastDoc(lastDoc);
+        setTrailHasMore(hasMore);
       })
-      .catch((err) => setAuditError(err.message))
-      .finally(() => setAuditLoading(false));
-  }, [activeTab, auditFilterMod, auditFilterUser]);
+      .catch((err) => setTrailError(err.message))
+      .finally(() => setTrailLoading(false));
+  }, [activeTab, trailFilterMod, trailFilterUser]);
 
   const loadMoreAudit = async () => {
-    if (!auditLastDoc) return;
-    setAuditLoadingMore(true);
+    if (!trailLastDoc) return;
+    setTrailLoadingMore(true);
     try {
       const { entries, lastDoc, hasMore } = await getAuditLog({
-        module: auditFilterMod || null,
-        performedBy: auditFilterUser.trim() || null,
-        after: auditLastDoc,
+        module: trailFilterMod || null,
+        performedBy: trailFilterUser.trim() || null,
+        after: trailLastDoc,
       });
-      setAuditEntries((p) => [...p, ...entries]);
-      setAuditLastDoc(lastDoc);
-      setAuditHasMore(hasMore);
+      setTrailEntries((p) => [...p, ...entries]);
+      setTrailLastDoc(lastDoc);
+      setTrailHasMore(hasMore);
     } catch (err) {
-      setAuditError(err.message);
+      setTrailError(err.message);
     } finally {
-      setAuditLoadingMore(false);
+      setTrailLoadingMore(false);
     }
   };
 
@@ -1039,8 +1039,8 @@ function AdminPanel() {
           <div style={{ paddingBottom: 16 }}>
             {/* Filter bar */}
             <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-color)", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-              <select className="admin-role-select" value={auditFilterMod}
-                onChange={(e) => setAuditFilterMod(e.target.value)}>
+              <select className="admin-role-select" value={trailFilterMod}
+                onChange={(e) => setTrailFilterMod(e.target.value)}>
                 <option value="">All Modules</option>
                 {Object.entries(MODULE_LABELS).map(([k, v]) => (
                   <option key={k} value={k}>{v}</option>
@@ -1051,32 +1051,32 @@ function AdminPanel() {
                 className="admin-search-input"
                 style={{ width: 220 }}
                 placeholder="Filter by user email…"
-                value={auditFilterUser}
-                onChange={(e) => setAuditFilterUser(e.target.value)}
+                value={trailFilterUser}
+                onChange={(e) => setTrailFilterUser(e.target.value)}
               />
               <span style={{ fontSize: 12, color: "var(--text-muted)", marginLeft: "auto" }}>
-                {auditEntries.length} entries shown
+                {trailEntries.length} entries shown
               </span>
             </div>
 
-            {auditLoading && (
+            {trailLoading && (
               <div className="loading-state" style={{ minHeight: 120 }}>
                 <div className="spinner" /><p>Loading audit log…</p>
               </div>
             )}
-            {!auditLoading && auditError && (
+            {!trailLoading && trailError && (
               <div className="error-state" style={{ minHeight: 80 }}>
                 <span className="error-icon">!</span>
-                <p className="error-detail">{auditError}</p>
+                <p className="error-detail">{trailError}</p>
               </div>
             )}
-            {!auditLoading && !auditError && auditEntries.length === 0 && (
+            {!trailLoading && !trailError && trailEntries.length === 0 && (
               <div className="empty-state" style={{ padding: "40px 20px" }}>
                 <p>No audit log entries yet.</p>
                 <p className="empty-hint">Actions performed on the platform will appear here.</p>
               </div>
             )}
-            {!auditLoading && !auditError && auditEntries.length > 0 && (
+            {!trailLoading && !trailError && trailEntries.length > 0 && (
               <>
                 <div className="table-scroll" style={{ maxHeight: 560 }}>
                   <table className="data-table">
@@ -1091,7 +1091,7 @@ function AdminPanel() {
                       </tr>
                     </thead>
                     <tbody>
-                      {auditEntries.map((entry) => {
+                      {trailEntries.map((entry) => {
                         const ts = entry.performedAt?.toDate
                           ? entry.performedAt.toDate()
                           : entry.performedAt
@@ -1140,10 +1140,10 @@ function AdminPanel() {
                     </tbody>
                   </table>
                 </div>
-                {auditHasMore && (
+                {trailHasMore && (
                   <div style={{ padding: "12px 16px", textAlign: "center" }}>
-                    <button className="admin-refresh-btn" onClick={loadMoreAudit} disabled={auditLoadingMore}>
-                      {auditLoadingMore ? "Loading…" : "Load More"}
+                    <button className="admin-refresh-btn" onClick={loadMoreAudit} disabled={trailLoadingMore}>
+                      {trailLoadingMore ? "Loading…" : "Load More"}
                     </button>
                   </div>
                 )}
