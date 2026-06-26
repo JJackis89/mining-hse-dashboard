@@ -614,7 +614,7 @@ function ReceiptModal({ user, editRecord, suppliers, onClose, onSuccess }) {
 
     try {
       if (isEdit) {
-        await updateReceipt(editRecord.id, payload);
+        await updateReceipt(editRecord.id, payload, user);
       } else {
         await addReceipt({ ...payload, addedByEmail: user.email });
       }
@@ -1049,8 +1049,8 @@ function PendingApprovalsPanel({ refresh, user, onApproved }) {
   const handle = async (id, action) => {
     setBusy((p) => ({ ...p, [id]: action }));
     try {
-      if (action === "approve") await approveIssuance(id, user.email);
-      else                      await rejectIssuance(id, user.email);
+      if (action === "approve") await approveIssuance(id, user);
+      else                      await rejectIssuance(id, user);
       setPending((p) => p.filter((r) => r.id !== id));
       onApproved();
     } catch (err) { alert("Failed: " + err.message); }
@@ -1223,7 +1223,7 @@ function Inventory() {
   const handleDeleteReceipt = useCallback(async () => {
     if (!deleteTarget) return;
     setDeleting(true);
-    await deleteReceipt(deleteTarget.id);
+    await deleteReceipt(deleteTarget.id, deleteTarget.material_name, user);
     setDeleting(false); setDeleteTarget(null);
     setReceiptsRefresh((n) => n + 1);
   }, [deleteTarget]);
@@ -1251,7 +1251,7 @@ function Inventory() {
 
   const handleReorderSave = useCallback(async (item, newPoint) => {
     try {
-      await updateInventoryItem(item.itemId || item.material_name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_"), { reorderPoint: newPoint });
+      await updateInventoryItem(item.itemId || item.material_name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_"), { reorderPoint: newPoint }, user);
       setInventoryItems((prev) => prev.map((i) => i.materialName === item.material_name ? { ...i, reorderPoint: newPoint } : i));
     } catch (err) { alert("Failed to update reorder point: " + err.message); }
   }, []);

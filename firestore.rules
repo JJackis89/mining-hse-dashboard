@@ -250,6 +250,17 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // ── auditLog ─────────────────────────────────────────────────
+    // Immutable trail of every platform action. Any authenticated
+    // user may append (the app writes after each mutation); only
+    // admins can read. Update and delete are permanently blocked —
+    // entries must never be altered or erased.
+    match /auditLog/{logId} {
+      allow create: if request.auth != null;
+      allow read:   if isAdmin();
+      allow update, delete: if false;
+    }
+
     // ── departmentPermissions ────────────────────────────────────
     // The live department × page permission matrix that
     // hasDeptPermission() above (and canPerform()/canAccessRoute() on

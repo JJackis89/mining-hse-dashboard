@@ -43,9 +43,9 @@ function SupplierModal({ supplier, user, onClose, onSaved }) {
     setSaving(true); setError("");
     try {
       if (isEdit) {
-        await updateSupplier(supplier.id, form);
+        await updateSupplier(supplier.id, form, user);
       } else {
-        await addSupplier(form, user.email);
+        await addSupplier(form, user);
       }
       onSaved();
     } catch (err) {
@@ -148,7 +148,7 @@ function Suppliers() {
     if (!window.confirm(`Remove "${supplier.name}" from the supplier directory?`)) return;
     setDeleting(supplier.id);
     try {
-      await deleteSupplier(supplier.id);
+      await deleteSupplier(supplier.id, supplier.name, user);
       setRefresh((n) => n + 1);
     } catch (err) {
       alert("Delete failed: " + err.message);

@@ -3,6 +3,7 @@ import {
   collection, addDoc, getDocs, getDoc, query,
   orderBy, serverTimestamp, where, doc, setDoc, updateDoc, deleteDoc,
 } from "firebase/firestore";
+import { logAction } from "./auditService";
 
 const RECEIPTS_COL    = "receipts";
 const ISSUANCES_COL   = "issuances";
@@ -18,8 +19,14 @@ export async function getInventorySettings() {
     : { issuanceApprovalThreshold: 50, lowStockDefault: 10 };
 }
 
-export async function saveInventorySettings(settings) {
+export async function saveInventorySettings(settings, by = null) {
   await setDoc(doc(db, APP_SETTINGS, "inventory"), settings, { merge: true });
+  logAction({
+    action: "settings.inventory", module: "settings",
+    performedBy: by?.email, performedByUid: by?.uid,
+    target: "Inventory Settings",
+    details: settings,
+  });
 }
 
 // ─── Receipts ────────────────────────────────────────────────
@@ -31,21 +38,51 @@ export async function getReceipts() {
 }
 
 export async function addReceipt(data) {
-  return addDoc(collection(db, RECEIPTS_COL), {
+  const ref = await addDoc(collection(db, RECEIPTS_COL), {
     ...data,
     createdAt: serverTimestamp(),
   });
+  logAction({
+    action: "receipt.add", module: "inventory",
+    performedBy: data.addedByEmail, performedByUid: null,
+    target: data.material_name,
+    details: {
+      qty:      data.quantity_received,
+      unit:     data.unit,
+      supplier: data.supplier || null,
+      poRef:    data.po_reference || null,
+      category: data.category || null,
+    },
+  });
+  return ref;
 }
 
-export async function updateReceipt(docId, data) {
+export async function updateReceipt(docId, data, by = null) {
   await updateDoc(doc(db, RECEIPTS_COL, docId), {
     ...data,
     updatedAt: serverTimestamp(),
   });
+  logAction({
+    action: "receipt.edit", module: "inventory",
+    performedBy: by?.email, performedByUid: by?.uid,
+    target: data.material_name,
+    details: {
+      qty:      data.quantity_received,
+      unit:     data.unit,
+      supplier: data.supplier || null,
+      poRef:    data.po_reference || null,
+    },
+  });
 }
 
-export async function deleteReceipt(docId) {
+export async function deleteReceipt(docId, materialName = null, by = null) {
   await deleteDoc(doc(db, RECEIPTS_COL, docId));
+  logAction({
+    action: "receipt.delete", module: "inventory",
+    performedBy: by?.email, performedByUid: by?.uid,
+    target: materialName,
+    details: { docId },
+  });
 }
 
 // ─── One-time migration: manualReceipts → receipts ───────────
@@ -85,7 +122,7 @@ export async function getPendingIssuances() {
 }
 
 // Only count approved/auto-approved issuances toward stock balance.
-// Legacy issuances (no approvalStatus field) are treated as approved.
+// Legacy issuances (no approvalStatus) are treated as approved.
 export async function getIssuanceTotals() {
   const snap = await getDocs(collection(db, ISSUANCES_COL));
   const totals = {};
@@ -100,25 +137,52 @@ export async function getIssuanceTotals() {
 }
 
 export async function addIssuance(data) {
-  return addDoc(collection(db, ISSUANCES_COL), {
+  const ref = await addDoc(collection(db, ISSUANCES_COL), {
     ...data,
     issuedAt: serverTimestamp(),
   });
+  logAction({
+    action: "issuance.create", module: "inventory",
+    performedBy: data.issuedByEmail, performedByUid: null,
+    target: data.materialName,
+    details: {
+      ref:           data.issueRefNumber,
+      qty:           data.qtyIssued,
+      unit:          data.unit,
+      issuedTo:      data.issuedTo,
+      department:    data.department,
+      projectCode:   data.projectCode || null,
+      approvalStatus: data.approvalStatus,
+    },
+  });
+  return ref;
 }
 
-export async function approveIssuance(docId, approverEmail) {
+export async function approveIssuance(docId, by) {
   await updateDoc(doc(db, ISSUANCES_COL, docId), {
     approvalStatus: "approved",
-    approvedBy:     approverEmail,
+    approvedBy:     by.email,
     approvedAt:     serverTimestamp(),
+  });
+  logAction({
+    action: "issuance.approve", module: "inventory",
+    performedBy: by.email, performedByUid: by.uid,
+    target: docId,
+    details: { issuanceId: docId },
   });
 }
 
-export async function rejectIssuance(docId, approverEmail) {
+export async function rejectIssuance(docId, by) {
   await updateDoc(doc(db, ISSUANCES_COL, docId), {
     approvalStatus: "rejected",
-    rejectedBy:     approverEmail,
+    rejectedBy:     by.email,
     rejectedAt:     serverTimestamp(),
+  });
+  logAction({
+    action: "issuance.reject", module: "inventory",
+    performedBy: by.email, performedByUid: by.uid,
+    target: docId,
+    details: { issuanceId: docId },
   });
 }
 
@@ -156,12 +220,20 @@ export async function getOrCreateInventoryItem(materialName, defaults = {}) {
   return item;
 }
 
-export async function updateInventoryItem(key, data) {
+export async function updateInventoryItem(key, data, by = null) {
   _itemCache.delete(key);
   await updateDoc(doc(db, INVENTORY_COL, key), {
     ...data,
     updatedAt: serverTimestamp(),
   });
+  if (by && data.reorderPoint !== undefined) {
+    logAction({
+      action: "adjustment.create", module: "inventory",
+      performedBy: by.email, performedByUid: by.uid,
+      target: key,
+      details: { field: "reorderPoint", newValue: data.reorderPoint },
+    });
+  }
 }
 
 export async function getAllInventoryItems() {
@@ -192,8 +264,20 @@ export async function getAdjustments() {
 }
 
 export async function addAdjustment(data) {
-  return addDoc(collection(db, ADJUSTMENTS_COL), {
+  const ref = await addDoc(collection(db, ADJUSTMENTS_COL), {
     ...data,
     createdAt: serverTimestamp(),
   });
+  logAction({
+    action: "adjustment.create", module: "inventory",
+    performedBy: data.adjustedByEmail, performedByUid: null,
+    target: data.materialName,
+    details: {
+      type:     data.adjustmentType,
+      qty:      data.quantity,
+      unit:     data.unit,
+      reason:   data.reason || null,
+    },
+  });
+  return ref;
 }

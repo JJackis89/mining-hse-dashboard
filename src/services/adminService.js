@@ -9,6 +9,7 @@ import {
   onSnapshot,
   writeBatch,
 } from "firebase/firestore";
+import { logAction } from "./auditService";
 
 // ── Diagnostics ───────────────────────────────────────────────
 
@@ -64,13 +65,25 @@ export function subscribeToUsers(onData, onError) {
 }
 
 /** Update role in userRoles. */
-export async function updateUserRole(uid, role) {
+export async function updateUserRole(uid, role, by = null, targetUser = null) {
   await setDoc(doc(db, "userRoles", uid), { role }, { merge: true });
+  logAction({
+    action: "user.roleChange", module: "admin",
+    performedBy: by?.email, performedByUid: by?.uid,
+    target: targetUser?.email || uid,
+    details: { newRole: role, targetUid: uid },
+  });
 }
 
 /** Merge profile fields (department, rank, accountStatus, etc.) into userRoles. */
-export async function updateUserProfile(uid, data) {
+export async function updateUserProfile(uid, data, by = null, targetUser = null) {
   await setDoc(doc(db, "userRoles", uid), data, { merge: true });
+  logAction({
+    action: "user.profileUpdate", module: "admin",
+    performedBy: by?.email, performedByUid: by?.uid,
+    target: targetUser?.email || uid,
+    details: { fields: Object.keys(data), targetUid: uid },
+  });
 }
 
 // ── User lifecycle (status transitions + profile removal) ─────
@@ -85,45 +98,57 @@ export async function updateUserProfile(uid, data) {
 // lands, and the user signs themselves out from there.
 
 /** Approve a pending registration: assign its role and activate the account. */
-export async function approveUser(uid, role = "viewer") {
+export async function approveUser(uid, role = "viewer", by = null, targetUser = null) {
   await setDoc(doc(db, "userRoles", uid), { role, accountStatus: "Active" }, { merge: true });
+  logAction({
+    action: "user.approve", module: "admin",
+    performedBy: by?.email, performedByUid: by?.uid,
+    target: targetUser?.email || uid,
+    details: { role, targetUid: uid },
+  });
 }
 
 /** Temporarily block sign-in (e.g. while investigating) without losing the profile or role. */
-export async function suspendUser(uid) {
+export async function suspendUser(uid, by = null, targetUser = null) {
   await setDoc(doc(db, "userRoles", uid), { accountStatus: "Suspended" }, { merge: true });
+  logAction({
+    action: "user.suspend", module: "admin",
+    performedBy: by?.email, performedByUid: by?.uid,
+    target: targetUser?.email || uid,
+    details: { targetUid: uid },
+  });
 }
 
 /** Longer-term block — keeps the record for audit but treats the account as retired. */
-export async function deactivateUser(uid) {
+export async function deactivateUser(uid, by = null, targetUser = null) {
   await setDoc(doc(db, "userRoles", uid), { accountStatus: "Deactivated" }, { merge: true });
+  logAction({
+    action: "user.deactivate", module: "admin",
+    performedBy: by?.email, performedByUid: by?.uid,
+    target: targetUser?.email || uid,
+    details: { targetUid: uid },
+  });
 }
 
 /** Restore a Suspended or Deactivated account to Active. */
-export async function reactivateUser(uid) {
+export async function reactivateUser(uid, by = null, targetUser = null) {
   await setDoc(doc(db, "userRoles", uid), { accountStatus: "Active" }, { merge: true });
+  logAction({
+    action: "user.reactivate", module: "admin",
+    performedBy: by?.email, performedByUid: by?.uid,
+    target: targetUser?.email || uid,
+    details: { targetUid: uid },
+  });
 }
 
-/**
- * Remove a user's platform profile entirely.
- *
- * Firebase Authentication records can only be deleted with the Admin SDK
- * (a Cloud Function or server with service-account credentials) — there is
- * no client API for an app to delete another user's auth record, no matter
- * who is signed in. This removes the Firestore-side record only, which is
- * the correct fix for "deleted-from-Auth users still appear in the platform
- * list" (the orphaned document is what was actually showing up).
- *
- * If the person can still authenticate, deleting just this document is still
- * safe: App.jsx treats a signed-in uid with no userRoles doc as a brand-new
- * registration, so they reappear (same uid) as a fresh role:'viewer' /
- * accountStatus:'Pending Approval' record and must be approved again — they
- * are never re-admitted automatically. To fully retire someone who can still
- * sign in, remove them from Firebase Console → Authentication → Users first
- * (or use Suspend/Deactivate, which blocks access without touching Auth).
- */
-export async function deleteUserProfile(uid) {
+export async function deleteUserProfile(uid, by = null, targetUser = null) {
   await deleteDoc(doc(db, "userRoles", uid));
+  logAction({
+    action: "user.delete", module: "admin",
+    performedBy: by?.email, performedByUid: by?.uid,
+    target: targetUser?.email || uid,
+    details: { targetUid: uid },
+  });
 }
 
 // ── Pending invites ───────────────────────────────────────────

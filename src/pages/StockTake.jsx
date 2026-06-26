@@ -93,7 +93,7 @@ function StockTake() {
   const handleStartNew = useCallback(async () => {
     setSaving(true);
     try {
-      const ref = await createStockTake({ date, notes, items: [] }, user.email);
+      const ref = await createStockTake({ date, notes, items: [] }, user);
       setRefresh((n) => n + 1);
       // Open the new take immediately
       setActiveTake({ id: ref.id, date, notes, items: [], status: "in-progress", conductedBy: user.email });
@@ -119,7 +119,7 @@ function StockTake() {
       return { ...m, actual, variance };
     });
     try {
-      await updateStockTakeItems(activeTake.id, items);
+      await updateStockTakeItems(activeTake.id, items, user);
       setActiveTake((p) => ({ ...p, items }));
       setSuccessMsg("Counts saved.");
       setTimeout(() => setSuccessMsg(""), 3000);
@@ -135,7 +135,7 @@ function StockTake() {
     if (!window.confirm("Mark this stock take as complete? You won't be able to edit counts afterward.")) return;
     setCompleting(true);
     try {
-      await completeStockTake(activeTake.id);
+      await completeStockTake(activeTake.id, user);
       setActiveTake((p) => ({ ...p, status: "completed" }));
       setRefresh((n) => n + 1);
     } catch (err) {

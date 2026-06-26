@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { useUser } from "../context/UserContext";
 import { migrateManualReceipts, getInventorySettings, saveInventorySettings } from "../services/issuanceService";
+import { getAuditLog, ACTION_LABELS, MODULE_LABELS } from "../services/auditService";
 import {
   subscribeToUsers,
   updateUserRole,
@@ -137,6 +138,16 @@ function AdminPanel() {
   const [migrating, setMigrating]   = useState(false);
   const [migrateMsg, setMigrateMsg] = useState("");
 
+  // ── Audit Log ───────────────────────────────────────────────
+  const [auditEntries, setAuditEntries]     = useState([]);
+  const [auditLoading, setAuditLoading]     = useState(false);
+  const [auditError, setAuditError]         = useState(null);
+  const [auditLastDoc, setAuditLastDoc]     = useState(null);
+  const [auditHasMore, setAuditHasMore]     = useState(false);
+  const [auditLoadingMore, setAuditLoadingMore] = useState(false);
+  const [auditFilterMod, setAuditFilterMod] = useState("");
+  const [auditFilterUser, setAuditFilterUser] = useState("");
+
   // ── Inventory Settings ───────────────────────────────────────
   const [invSettings, setInvSettings]       = useState({ issuanceApprovalThreshold: 50, lowStockDefault: 10 });
   const [invSettingsLoading, setInvSettingsLoading] = useState(false);
@@ -200,6 +211,44 @@ function AdminPanel() {
       .catch(() => {})
       .finally(() => setInvSettingsLoading(false));
   }, [activeTab]);
+
+  // Audit Log — load/reload when tab opens or filters change
+  useEffect(() => {
+    if (activeTab !== "auditlog") return;
+    setAuditLoading(true);
+    setAuditError(null);
+    setAuditLastDoc(null);
+    getAuditLog({
+      module: auditFilterMod || null,
+      performedBy: auditFilterUser.trim() || null,
+    })
+      .then(({ entries, lastDoc, hasMore }) => {
+        setAuditEntries(entries);
+        setAuditLastDoc(lastDoc);
+        setAuditHasMore(hasMore);
+      })
+      .catch((err) => setAuditError(err.message))
+      .finally(() => setAuditLoading(false));
+  }, [activeTab, auditFilterMod, auditFilterUser]);
+
+  const loadMoreAudit = async () => {
+    if (!auditLastDoc) return;
+    setAuditLoadingMore(true);
+    try {
+      const { entries, lastDoc, hasMore } = await getAuditLog({
+        module: auditFilterMod || null,
+        performedBy: auditFilterUser.trim() || null,
+        after: auditLastDoc,
+      });
+      setAuditEntries((p) => [...p, ...entries]);
+      setAuditLastDoc(lastDoc);
+      setAuditHasMore(hasMore);
+    } catch (err) {
+      setAuditError(err.message);
+    } finally {
+      setAuditLoadingMore(false);
+    }
+  };
 
   // Department Permissions — subscribe only while the tab is open
   useEffect(() => {
@@ -352,9 +401,10 @@ function AdminPanel() {
     if (!changes || Object.keys(changes).length === 0) return;
     setSaving((s) => ({ ...s, [uid]: true }));
     try {
+      const targetUser = users.find((u) => u.id === uid);
       const { role, ...profileChanges } = changes;
-      if (role) await updateUserRole(uid, role);
-      if (Object.keys(profileChanges).length > 0) await updateUserProfile(uid, profileChanges);
+      if (role) await updateUserRole(uid, role, user, targetUser);
+      if (Object.keys(profileChanges).length > 0) await updateUserProfile(uid, profileChanges, user, targetUser);
       setPendingChanges((p) => { const n = { ...p }; delete n[uid]; return n; });
       setSaveMsg((m) => ({ ...m, [uid]: "ok" }));
       setTimeout(() => setSaveMsg((m) => { const n = { ...m }; delete n[uid]; return n; }), 2500);
@@ -389,11 +439,11 @@ function AdminPanel() {
     }
   };
 
-  const handleApprove    = (u) => runLifecycleAction(u, "approve",    () => approveUser(u.id, u.role || "viewer"), "Approved — account is now Active");
-  const handleSuspend    = (u) => runLifecycleAction(u, "suspend",    () => suspendUser(u.id),                     "Suspended");
-  const handleDeactivate = (u) => runLifecycleAction(u, "deactivate", () => deactivateUser(u.id),                  "Deactivated");
-  const handleReactivate = (u) => runLifecycleAction(u, "reactivate", () => reactivateUser(u.id),                  "Restored to Active");
-  const handleDelete     = (u) => runLifecycleAction(u, "delete",     () => deleteUserProfile(u.id),               "Removed from platform");
+  const handleApprove    = (u) => runLifecycleAction(u, "approve",    () => approveUser(u.id, u.role || "viewer", user, u), "Approved — account is now Active");
+  const handleSuspend    = (u) => runLifecycleAction(u, "suspend",    () => suspendUser(u.id, user, u),                    "Suspended");
+  const handleDeactivate = (u) => runLifecycleAction(u, "deactivate", () => deactivateUser(u.id, user, u),                 "Deactivated");
+  const handleReactivate = (u) => runLifecycleAction(u, "reactivate", () => reactivateUser(u.id, user, u),                 "Restored to Active");
+  const handleDelete     = (u) => runLifecycleAction(u, "delete",     () => deleteUserProfile(u.id, user, u),              "Removed from platform");
 
   // ── Invites ──────────────────────────────────────────────────
   const handleInvite = async (e) => {
@@ -510,6 +560,7 @@ function AdminPanel() {
             { id: "invites",     label: "Invite Users" },
             { id: "permissions", label: "Department Permissions" },
             { id: "invsettings", label: "Inventory Settings" },
+            { id: "auditlog",    label: "Audit Log" },
             { id: "diagnostics", label: "Diagnostics" },
           ].map((t) => (
             <button
@@ -983,6 +1034,124 @@ function AdminPanel() {
           </div>
         )}
 
+        {/* ── Audit Log tab ─────────────────────── */}
+        {activeTab === "auditlog" && (
+          <div style={{ paddingBottom: 16 }}>
+            {/* Filter bar */}
+            <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-color)", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+              <select className="admin-role-select" value={auditFilterMod}
+                onChange={(e) => setAuditFilterMod(e.target.value)}>
+                <option value="">All Modules</option>
+                {Object.entries(MODULE_LABELS).map(([k, v]) => (
+                  <option key={k} value={k}>{v}</option>
+                ))}
+              </select>
+              <input
+                type="text"
+                className="admin-search-input"
+                style={{ width: 220 }}
+                placeholder="Filter by user email…"
+                value={auditFilterUser}
+                onChange={(e) => setAuditFilterUser(e.target.value)}
+              />
+              <span style={{ fontSize: 12, color: "var(--text-muted)", marginLeft: "auto" }}>
+                {auditEntries.length} entries shown
+              </span>
+            </div>
+
+            {auditLoading && (
+              <div className="loading-state" style={{ minHeight: 120 }}>
+                <div className="spinner" /><p>Loading audit log…</p>
+              </div>
+            )}
+            {!auditLoading && auditError && (
+              <div className="error-state" style={{ minHeight: 80 }}>
+                <span className="error-icon">!</span>
+                <p className="error-detail">{auditError}</p>
+              </div>
+            )}
+            {!auditLoading && !auditError && auditEntries.length === 0 && (
+              <div className="empty-state" style={{ padding: "40px 20px" }}>
+                <p>No audit log entries yet.</p>
+                <p className="empty-hint">Actions performed on the platform will appear here.</p>
+              </div>
+            )}
+            {!auditLoading && !auditError && auditEntries.length > 0 && (
+              <>
+                <div className="table-scroll" style={{ maxHeight: 560 }}>
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">When</th>
+                        <th scope="col">Who</th>
+                        <th scope="col">Action</th>
+                        <th scope="col">Module</th>
+                        <th scope="col">Target</th>
+                        <th scope="col">Details</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {auditEntries.map((entry) => {
+                        const ts = entry.performedAt?.toDate
+                          ? entry.performedAt.toDate()
+                          : entry.performedAt
+                          ? new Date(entry.performedAt)
+                          : null;
+                        const timeStr = ts
+                          ? ts.toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })
+                          : "—";
+                        const details = entry.details
+                          ? Object.entries(entry.details)
+                              .filter(([, v]) => v !== null && v !== undefined && v !== "")
+                              .map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`)
+                              .join(" · ")
+                          : null;
+                        return (
+                          <tr key={entry.id}>
+                            <td className="mono" style={{ fontSize: 11, whiteSpace: "nowrap" }}>{timeStr}</td>
+                            <td style={{ fontSize: 12 }}>{entry.performedBy || "—"}</td>
+                            <td>
+                              <span style={{
+                                fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 10,
+                                background: entry.action?.startsWith("user.") ? "rgba(125,60,152,0.1)"
+                                  : entry.action?.startsWith("receipt.") ? "rgba(184,136,26,0.1)"
+                                  : entry.action?.startsWith("issuance.") ? "rgba(26,116,188,0.1)"
+                                  : entry.action?.startsWith("supplier.") ? "rgba(30,158,82,0.1)"
+                                  : "rgba(100,100,100,0.08)",
+                                color: entry.action?.startsWith("user.") ? "#7D3C98"
+                                  : entry.action?.startsWith("receipt.") ? "#B8881A"
+                                  : entry.action?.startsWith("issuance.") ? "#1A74BC"
+                                  : entry.action?.startsWith("supplier.") ? "#1E9E52"
+                                  : "var(--text-secondary)",
+                              }}>
+                                {ACTION_LABELS[entry.action] || entry.action}
+                              </span>
+                            </td>
+                            <td style={{ fontSize: 12 }}>{MODULE_LABELS[entry.module] || entry.module || "—"}</td>
+                            <td className="bold" style={{ fontSize: 12, maxWidth: 180, whiteSpace: "normal" }}>
+                              {entry.target || "—"}
+                            </td>
+                            <td style={{ fontSize: 11, color: "var(--text-muted)", maxWidth: 280, whiteSpace: "normal", lineHeight: 1.5 }}>
+                              {details || "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                {auditHasMore && (
+                  <div style={{ padding: "12px 16px", textAlign: "center" }}>
+                    <button className="admin-refresh-btn" onClick={loadMoreAudit} disabled={auditLoadingMore}>
+                      {auditLoadingMore ? "Loading…" : "Load More"}
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
         {/* ── Diagnostics tab ───────────────────── */}
         {activeTab === "diagnostics" && (() => {
           const missingEmail      = users.filter((u) => !u.email).length;
@@ -1317,7 +1486,7 @@ service cloud.firestore {
                     onClick={async () => {
                       setInvSettingsSaving(true); setInvSettingsMsg("");
                       try {
-                        await saveInventorySettings(invSettings);
+                        await saveInventorySettings(invSettings, user);
                         setInvSettingsMsg("Settings saved.");
                       } catch (err) {
                         setInvSettingsMsg("Save failed: " + err.message);
